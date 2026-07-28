@@ -1,0 +1,38 @@
+[Unit]
+Description=DLMM Manager — Meteora DLMM liquidity manager
+After=network-online.target
+Wants=network-online.target
+# Crash-loop limiter — these belong in [Unit] (systemd ignores them in [Service]):
+# stop restarting if it dies more than 5 times in 120s.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=dlmm
+Group=dlmm
+WorkingDirectory=/opt/dlmm-manager
+# NOTE: no EnvironmentFile — the app loads .env itself via dotenv (relative to
+# WorkingDirectory), which correctly strips inline `# comments`. systemd's
+# EnvironmentFile parser does NOT strip them and would inject e.g.
+# `20  # comment` as the literal value, crashing config validation at boot.
+ExecStart=/usr/bin/node /opt/dlmm-manager/dist/index.js
+Restart=always
+RestartSec=5
+
+# Writable paths under ProtectSystem=strict: the state dir, plus .env and
+# secrets/ so the dashboard's config/token/telegram/wallet writes persist.
+ReadWritePaths=/opt/dlmm-manager/data /opt/dlmm-manager/.env /opt/dlmm-manager/secrets
+
+# Hardening.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

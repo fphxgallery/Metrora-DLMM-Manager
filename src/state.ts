@@ -1,0 +1,242 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import type { StrategyTypeName } from "./config.js";
+
+/**
+ * Where a rebalance got to. A crash mid-sequence resumes from here.
+ *
+ * `atomic` is the whole of path A — one `rebalance_liquidity` instruction that
+ * withdraws, re-centres and redeposits together, so it either lands or it did
+ * not happen. Path B walks withdraw -> swap -> deposit, and each of those
+ * boundaries is a point where funds can sit in the wallet instead of the pool.
+ */
+export type RebalancePhase = "atomic" | "withdraw" | "swap" | "deposit" | "done" | "failed";
+
+/** A position this app manages (opened here, or adopted from the UI). */
+export interface ManagedPosition {
+  positionPk: string;
+  poolAddress: string;
+  /** Token symbols/mints cached for log + telegram readability. */
+  pairName?: string;
+  auto: boolean;
+  // Per-position overrides; unset falls back to the global config value.
+  rangeBins?: number;
+  strategyType?: StrategyTypeName;
+  edgeBufferBins?: number;
+  cooldownMin?: number;
+  openedAt: number;
+  lastRebalanceAt?: number;
+  rebalanceCount: number;
+  /** Poll samples used for the time-in-range metric. */
+  pollsTotal: number;
+  pollsInRange: number;
+}
+
+/**
+ * A rebalance in flight. Written BEFORE each send and updated after each
+ * confirmation, so a crash between the withdraw and the deposit leaves a record
+ * that boot can resume — otherwise the funds sit idle in the wallet while the
+ * position reads as empty.
+ */
+export interface JournalEntry {
+  id: string;
+  positionPk: string;
+  poolAddress: string;
+  /** "A" = single atomic rebalance ix. "B" = withdraw -> swap -> deposit. */
+  path: "A" | "B";
+  phase: RebalancePhase;
+  targetMinBinId: number;
+  targetMaxBinId: number;
+  strategyType: StrategyTypeName;
+  startedAt: number;
+  updatedAt: number;
+  sigs: string[];
+  error?: string;
+  /** Path B only: the ratio swap planned/executed between withdraw and deposit. */
+  swap?: {
+    inMint: string;
+    outMint: string;
+    /** Raw base units, as a string (BN is not JSON-safe). */
+    inAmount: string;
+    outAmount?: string;
+    sig?: string;
+  };
+}
+
+/** One completed rebalance, for the METRICS tab's cost-vs-fees view. */
+export interface RebalanceRecord {
+  ts: number;
+  positionPk: string;
+  poolAddress: string;
+  path: "A" | "B";
+  fromRange: [number, number];
+  toRange: [number, number];
+  /** Network + priority fees actually paid, in lamports. */
+  costLamports: number;
+  /** Rent paid for newly initialized bin arrays, in lamports. */
+  rentLamports: number;
+  /** Realized swap cost (quoted-out minus received-out) in bps, when a swap ran. */
+  swapCostBps?: number;
+  feesClaimedX?: string;
+  feesClaimedY?: string;
+  sigs: string[];
+}
+
+const MAX_REBALANCE_RECORDS = 1000;
+const MAX_JOURNAL_ENTRIES = 100;
+
+export interface PersistedState {
+  version: 1;
+  positions: ManagedPosition[];
+  journal: JournalEntry[];
+  rebalances: RebalanceRecord[];
+  /** Global auto-rebalance kill switch set from the UI; overrides AUTO_REBALANCE. */
+  autoOverride?: boolean;
+  /** Runtime DRY_RUN override set from the UI. Undefined = use the env flag. */
+  dryRunOverride?: boolean;
+}
+
+function emptyState(): PersistedState {
+  return { version: 1, positions: [], journal: [], rebalances: [] };
+}
+
+export class Store {
+  private file: string;
+  private data: PersistedState;
+
+  constructor(dataDir: string) {
+    mkdirSync(dataDir, { recursive: true });
+    this.file = join(dataDir, "state.json");
+    this.data = this.load();
+  }
+
+  private load(): PersistedState {
+    if (!existsSync(this.file)) return emptyState();
+    try {
+      const parsed = JSON.parse(readFileSync(this.file, "utf8")) as Partial<PersistedState>;
+      return { ...emptyState(), ...parsed, version: 1 };
+    } catch {
+      // A corrupt state file must not block boot, but it also must not be
+      // silently overwritten — keep the bad copy for inspection.
+      const bak = `${this.file}.corrupt.${Date.now()}`;
+      try {
+        renameSync(this.file, bak);
+      } catch {
+        /* best effort */
+      }
+      return emptyState();
+    }
+  }
+
+  private save(): void {
+    // Write-then-rename so a crash mid-write can't truncate state.json — the
+    // journal is the only thing standing between a crash and stranded funds.
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+    renameSync(tmp, this.file);
+  }
+
+  get(): PersistedState {
+    return this.data;
+  }
+
+  // ---- managed positions ----
+
+  positions(): ManagedPosition[] {
+    return this.data.positions;
+  }
+
+  position(pk: string): ManagedPosition | undefined {
+    return this.data.positions.find((p) => p.positionPk === pk);
+  }
+
+  upsertPosition(pos: ManagedPosition): ManagedPosition {
+    const i = this.data.positions.findIndex((p) => p.positionPk === pos.positionPk);
+    if (i >= 0) this.data.positions[i] = { ...this.data.positions[i], ...pos };
+    else this.data.positions.push(pos);
+    this.save();
+    return this.position(pos.positionPk)!;
+  }
+
+  patchPosition(pk: string, patch: Partial<ManagedPosition>): ManagedPosition | undefined {
+    const p = this.position(pk);
+    if (!p) return undefined;
+    Object.assign(p, patch);
+    this.save();
+    return p;
+  }
+
+  removePosition(pk: string): void {
+    this.data.positions = this.data.positions.filter((p) => p.positionPk !== pk);
+    this.save();
+  }
+
+  /** Records one poll sample for the time-in-range metric. */
+  recordPoll(pk: string, inRange: boolean): void {
+    const p = this.position(pk);
+    if (!p) return;
+    p.pollsTotal += 1;
+    if (inRange) p.pollsInRange += 1;
+    // Not saved per poll — recordPoll runs every tick and would thrash the disk.
+    // Counters are flushed by the next save() from any other mutation, and by
+    // flush() on shutdown. Losing a few samples on a hard kill is acceptable.
+  }
+
+  flush(): void {
+    this.save();
+  }
+
+  // ---- rebalance journal ----
+
+  openJournal(entry: JournalEntry): JournalEntry {
+    this.data.journal.push(entry);
+    if (this.data.journal.length > MAX_JOURNAL_ENTRIES) this.data.journal.shift();
+    this.save();
+    return entry;
+  }
+
+  journalEntry(id: string): JournalEntry | undefined {
+    return this.data.journal.find((j) => j.id === id);
+  }
+
+  updateJournal(id: string, patch: Partial<JournalEntry>): void {
+    const j = this.journalEntry(id);
+    if (!j) return;
+    Object.assign(j, patch, { updatedAt: Date.now() });
+    this.save();
+  }
+
+  /** Entries that neither completed nor were marked failed — resume these at boot. */
+  pendingJournal(): JournalEntry[] {
+    return this.data.journal.filter((j) => j.phase !== "done" && j.phase !== "failed");
+  }
+
+  // ---- cost ledger ----
+
+  recordRebalance(rec: RebalanceRecord): void {
+    this.data.rebalances.push(rec);
+    if (this.data.rebalances.length > MAX_REBALANCE_RECORDS) this.data.rebalances.shift();
+    const p = this.position(rec.positionPk);
+    if (p) {
+      p.rebalanceCount += 1;
+      p.lastRebalanceAt = rec.ts;
+    }
+    this.save();
+  }
+
+  rebalances(): RebalanceRecord[] {
+    return this.data.rebalances;
+  }
+
+  // ---- global toggles ----
+
+  setAutoOverride(v: boolean | undefined): void {
+    this.data.autoOverride = v;
+    this.save();
+  }
+
+  setDryRunOverride(v: boolean | undefined): void {
+    this.data.dryRunOverride = v;
+    this.save();
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "dlmm-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted manager for Meteora DLMM liquidity positions with automatic rebalancing",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build:server": "tsc -p tsconfig.json",
+    "build:client": "cd client && npm run build",
+    "build": "npm run build:client && npm run build:server",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build:server && node --test \"test/**/*.test.mjs\"",
+    "wallet": "node dist/wallet/index.js",
+    "wallet:dev": "tsx src/wallet/index.ts",
+    "install:all": "npm install && cd client && npm install"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.31.0",
+    "@fastify/static": "^7.0.4",
+    "@meteora-ag/dlmm": "^1.9.14",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.0",
+    "bip39": "^3.1.0",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "decimal.js": "^10.4.3",
+    "dotenv": "^16.4.5",
+    "ed25519-hd-key": "^1.3.0",
+    "fastify": "^4.28.1",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.6",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,33 @@
+services:
+  dlmm-manager:
+    build: .
+    image: dlmm-manager:latest
+    container_name: dlmm-manager
+    restart: unless-stopped
+    # NOTE: deliberately NO `env_file: .env`. Docker bakes an env_file's values
+    # into the container at creation, and dotenv will not override variables that
+    # already exist in process.env — so a setting saved from the dashboard would
+    # be written to .env correctly and then silently ignored on the next restart,
+    # which reads the stale baked-in value. The app loads /app/.env itself (it is
+    # bind-mounted below), so it sees the current file on every boot.
+    # Compose still reads .env for ${PORT} interpolation; that is separate.
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      # Managed positions, the rebalance journal, and the cost ledger.
+      - ./data:/app/data
+      # Mount the host .env READ-WRITE so settings saved from the dashboard
+      # persist to the host file and survive `up --build`. Without this the
+      # container writes a throwaway /app/.env that is lost on every rebuild.
+      - ./.env:/app/.env
+      # Mount the secrets DIRECTORY (not a single file) so this works before any
+      # keypair exists. Read-write so the wallet UI can create/import one; if you
+      # only ever import from the host CLI, change this to `:ro`.
+      - ./secrets:/app/secrets
+    environment:
+      - DATA_DIR=/app/data
+      - KEYPAIR_PATH=/app/secrets/keypair.json
+      # Bind 0.0.0.0 *inside the container* so the published port reaches it.
+      # The port mapping is the real boundary — set API_TOKEN in .env before
+      # publishing this port on a public interface.
+      - HOST=0.0.0.0

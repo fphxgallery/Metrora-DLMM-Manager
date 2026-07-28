@@ -1,0 +1,10 @@
+node_modules/
+dist/
+client/dist/
+client/node_modules/
+data/
+secrets/
+.env
+.env.bak*
+*.log
+.DS_Store

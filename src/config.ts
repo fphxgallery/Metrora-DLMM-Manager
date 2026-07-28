@@ -1,0 +1,170 @@
+import "dotenv/config";
+
+function str(key: string, def?: string): string {
+  const v = process.env[key] ?? def;
+  if (v === undefined) throw new Error(`Missing required env: ${key}`);
+  return v;
+}
+function num(key: string, def?: number): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw === "") {
+    if (def === undefined) throw new Error(`Missing required env: ${key}`);
+    return def;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`Env ${key} must be a number, got "${raw}"`);
+  return n;
+}
+function bool(key: string, def: boolean): boolean {
+  const raw = process.env[key];
+  if (raw === undefined || raw === "") return def;
+  return /^(1|true|yes|on)$/i.test(raw);
+}
+
+export const STRATEGY_TYPES = ["Spot", "Curve", "BidAsk"] as const;
+export type StrategyTypeName = (typeof STRATEGY_TYPES)[number];
+
+export interface Config {
+  // --- chain ---
+  rpcEndpoint: string;
+  cluster: "mainnet-beta" | "devnet";
+  keypairPath: string;
+  priorityFeeMicroLamports: number;
+  computeUnitLimit: number;
+  minSolBalance: number;
+
+  // --- meteora data api ---
+  dataApiUrl: string;
+  dataApiCacheMs: number;
+
+  // --- default position shape ---
+  /** Half-width of a new position in bins: range = [active - N, active + N]. */
+  rangeBins: number;
+  strategyType: StrategyTypeName;
+
+  // --- auto-rebalance ---
+  autoRebalance: boolean;
+  pollIntervalMs: number;
+  /** Fire when the active bin comes within this many bins of a range edge. */
+  edgeBufferBins: number;
+  /** Never rebalance the same position more often than this. */
+  cooldownMin: number;
+  /** Require unclaimed+projected fees >= estimated cost * this ratio. */
+  minFeeCoverRatio: number;
+  /** Token ratio deviation (bps of position value) that justifies a swap leg. */
+  ratioToleranceBps: number;
+  /** Max bins the active bin may move between simulate and land before the ix fails. */
+  maxActiveBinSlippage: number;
+  /** Swap slippage for the ratio leg. 0 = let Jupiter pick (dynamic slippage). */
+  swapSlippageBps: number;
+  /** Hard ceiling on how much of a position's value one rebalance may swap. */
+  maxSwapPctOfPosition: number;
+
+  // --- safety ---
+  dryRun: boolean;
+
+  // --- service ---
+  port: number;
+  host: string;
+  apiToken?: string;
+  enableWalletUi: boolean;
+  dataDir: string;
+  telegramBotToken?: string;
+  telegramChatId?: string;
+}
+
+export function loadConfig(): Config {
+  const cluster = str("CLUSTER", "mainnet-beta") as Config["cluster"];
+  const strategyType = str("STRATEGY_TYPE", "Spot") as StrategyTypeName;
+
+  const cfg: Config = {
+    rpcEndpoint: str("RPC_ENDPOINT"),
+    cluster,
+    keypairPath: str("KEYPAIR_PATH", "./secrets/keypair.json"),
+    priorityFeeMicroLamports: num("PRIORITY_FEE_MICROLAMPORTS", 200_000),
+    computeUnitLimit: num("COMPUTE_UNIT_LIMIT", 600_000),
+    minSolBalance: num("MIN_SOL_BALANCE", 0.05),
+
+    dataApiUrl: str("DATA_API_URL", "https://dlmm.datapi.meteora.ag"),
+    dataApiCacheMs: num("DATA_API_CACHE_MS", 10_000),
+
+    rangeBins: num("RANGE_BINS", 20),
+    strategyType,
+
+    autoRebalance: bool("AUTO_REBALANCE", false),
+    pollIntervalMs: num("POLL_INTERVAL_MS", 30_000),
+    edgeBufferBins: num("EDGE_BUFFER_BINS", 2),
+    cooldownMin: num("COOLDOWN_MIN", 15),
+    minFeeCoverRatio: num("MIN_FEE_COVER_RATIO", 1.5),
+    ratioToleranceBps: num("RATIO_TOLERANCE_BPS", 1500),
+    maxActiveBinSlippage: num("MAX_ACTIVE_BIN_SLIPPAGE", 5),
+    swapSlippageBps: num("SWAP_SLIPPAGE_BPS", 0),
+    maxSwapPctOfPosition: num("MAX_SWAP_PCT_OF_POSITION", 60),
+
+    dryRun: bool("DRY_RUN", true),
+
+    port: num("PORT", 8080),
+    host: str("HOST", "127.0.0.1"),
+    apiToken: process.env.API_TOKEN || undefined,
+    enableWalletUi: bool("ENABLE_WALLET_UI", false),
+    dataDir: str("DATA_DIR", "./data"),
+    telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || undefined,
+    telegramChatId: process.env.TELEGRAM_CHAT_ID || undefined,
+  };
+
+  validate(cfg);
+  return cfg;
+}
+
+function validate(cfg: Config): void {
+  if (!["mainnet-beta", "devnet"].includes(cfg.cluster)) {
+    throw new Error(`CLUSTER must be mainnet-beta or devnet (got "${cfg.cluster}")`);
+  }
+  if (!(STRATEGY_TYPES as readonly string[]).includes(cfg.strategyType)) {
+    throw new Error(`STRATEGY_TYPE must be one of: ${STRATEGY_TYPES.join(", ")} (got "${cfg.strategyType}")`);
+  }
+  if (!/^https?:\/\//.test(cfg.rpcEndpoint)) {
+    throw new Error(`RPC_ENDPOINT must be an http(s) URL (got "${cfg.rpcEndpoint}")`);
+  }
+  if (!Number.isInteger(cfg.rangeBins) || cfg.rangeBins < 1) {
+    throw new Error(`RANGE_BINS must be an integer >= 1 (got ${cfg.rangeBins})`);
+  }
+  // A single position account can only span POSITION_MAX_LENGTH bins; the SDK's
+  // multi-position path is deliberately out of scope for v1, so cap the half-width.
+  if (cfg.rangeBins > MAX_RANGE_BINS) {
+    throw new Error(`RANGE_BINS must be <= ${MAX_RANGE_BINS} (one position account); got ${cfg.rangeBins}`);
+  }
+  if (!Number.isInteger(cfg.edgeBufferBins) || cfg.edgeBufferBins < 0) {
+    throw new Error(`EDGE_BUFFER_BINS must be a non-negative integer (got ${cfg.edgeBufferBins})`);
+  }
+  if (cfg.edgeBufferBins >= cfg.rangeBins) {
+    throw new Error(
+      `EDGE_BUFFER_BINS (${cfg.edgeBufferBins}) must be < RANGE_BINS (${cfg.rangeBins}) — otherwise every position is "near the edge" the moment it opens and rebalances forever`,
+    );
+  }
+  if (cfg.cooldownMin < 0) throw new Error(`COOLDOWN_MIN must be >= 0 (got ${cfg.cooldownMin})`);
+  if (cfg.minFeeCoverRatio < 0) throw new Error(`MIN_FEE_COVER_RATIO must be >= 0 (got ${cfg.minFeeCoverRatio})`);
+  if (cfg.ratioToleranceBps < 0 || cfg.ratioToleranceBps > 10_000) {
+    throw new Error(`RATIO_TOLERANCE_BPS must be in [0,10000] (got ${cfg.ratioToleranceBps})`);
+  }
+  if (cfg.swapSlippageBps < 0 || cfg.swapSlippageBps > 10_000) {
+    throw new Error(`SWAP_SLIPPAGE_BPS must be in [0,10000] (got ${cfg.swapSlippageBps})`);
+  }
+  if (cfg.maxSwapPctOfPosition <= 0 || cfg.maxSwapPctOfPosition > 100) {
+    throw new Error(`MAX_SWAP_PCT_OF_POSITION must be in (0,100] (got ${cfg.maxSwapPctOfPosition})`);
+  }
+  if (cfg.maxActiveBinSlippage < 0) {
+    throw new Error(`MAX_ACTIVE_BIN_SLIPPAGE must be >= 0 (got ${cfg.maxActiveBinSlippage})`);
+  }
+  if (cfg.pollIntervalMs < 5_000) {
+    throw new Error("POLL_INTERVAL_MS too low (min 5000ms) — avoid RPC and Data API rate limits");
+  }
+  if (cfg.minSolBalance < 0) throw new Error("MIN_SOL_BALANCE must be >= 0");
+}
+
+/**
+ * Half-width cap for a single position account. `POSITION_MAX_LENGTH` in the SDK
+ * is 1400 bins; halved and rounded down with margin so [active-N, active+N] plus
+ * the active bin always fits one account.
+ */
+export const MAX_RANGE_BINS = 690;
