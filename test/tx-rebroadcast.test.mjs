@@ -145,3 +145,19 @@ test("the transaction is still signable and serialisable after retightening", ()
   assert.equal(after.length, before, "same shape, just a different limit value");
   assert.equal(limitOf(tx), Math.ceil(250_000 * 1.5) + 20_000);
 });
+
+// Regression: the threshold was originally 3, which never fired on the one case
+// it exists for. Measured on the live SOL-USDC position, the path-B withdraw leg
+// uses 590,188 CU against the SDK's 1,400,000 fallback -- a ratio of 2.37.
+test("fires on the real measured withdraw-leg ratio (2.37x)", () => {
+  const tx = txWithLimit(1_400_000);
+  const units = sender().retightenComputeLimit(tx, 590_188);
+
+  assert.equal(units, Math.ceil(590_188 * 1.5) + 20_000);
+  assert.equal(limitOf(tx), units);
+  assert.ok(units > 590_188 * 1.5, "keeps >50% headroom over measured usage");
+
+  // What this is actually worth, at PRIORITY_FEE_MICROLAMPORTS=200000.
+  const fee = (u) => Math.round((200_000 * u) / 1e6);
+  assert.ok(fee(1_400_000) - fee(units) > 90_000, "saves ~99k lamports per leg");
+});

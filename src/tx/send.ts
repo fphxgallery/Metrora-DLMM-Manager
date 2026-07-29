@@ -37,10 +37,15 @@ const REBROADCAST_INTERVAL_MS = 2_000;
 
 /**
  * Only retighten a compute-unit limit that exceeds simulated usage by more than
- * this. Well above any plausible simulate-vs-execute drift, so ordinary
- * transactions are left alone entirely.
+ * this, so ordinary transactions are left alone entirely.
+ *
+ * Measured on the live SOL-USDC position: the path-B withdraw leg really uses
+ * 590,188 CU against the SDK's 1,400,000 fallback — a ratio of 2.37. An earlier
+ * threshold of 3 therefore never fired on the one case this exists for, and the
+ * leg kept paying 280,000 lamports of priority fee. 2 catches it while still
+ * sitting far above any plausible simulate-vs-execute drift.
  */
-const CU_RETIGHTEN_RATIO = 3;
+const CU_RETIGHTEN_RATIO = 2;
 /** Headroom kept when retightening: half again the simulated usage, plus a floor. */
 const CU_SAFETY_MULTIPLIER = 1.5;
 const CU_SAFETY_FLOOR = 20_000;
