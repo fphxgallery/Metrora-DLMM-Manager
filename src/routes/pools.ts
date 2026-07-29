@@ -35,11 +35,13 @@ export function registerPoolRoutes(app: FastifyInstance, ctx: AppContext): void 
           dynamicFeePct: p.dynamic_fee_pct,
           tvl: p.tvl,
           currentPrice: p.current_price,
-          apr: p.apr,
-          apy: p.apy,
+          // The API's `apr` is a DAILY percentage (it equals fee_tvl_ratio_24h);
+          // `apy` is that compounded over 365 days. Pass them through named for
+          // what they are so the UI cannot render a meaningless middle number.
+          feeTvlDailyPct: p.apr,
+          apyPct: p.apy,
           volume24h: p.volume?.["24h"] ?? 0,
           fees24h: p.fees?.["24h"] ?? 0,
-          feeTvlRatio24h: p.fee_tvl_ratio?.["24h"] ?? 0,
           hasFarm: p.has_farm,
           isBlacklisted: p.is_blacklisted,
           tokenX: { symbol: p.token_x.symbol, mint: p.token_x.address, decimals: p.token_x.decimals, priceUsd: p.token_x.price },
@@ -93,8 +95,8 @@ export function registerPoolRoutes(app: FastifyInstance, ctx: AppContext): void 
         variableFeePct: Math.max(0, totalFeePct - baseFeePct),
         maxFeePct: Number(feeInfo.maxFeeRatePercentage),
         tvl: meta?.tvl ?? null,
-        apr: meta?.apr ?? null,
-        apy: meta?.apy ?? null,
+        feeTvlDailyPct: meta?.apr ?? null,
+        apyPct: meta?.apy ?? null,
         volume24h: meta?.volume?.["24h"] ?? null,
         fees24h: meta?.fees?.["24h"] ?? null,
         isBlacklisted: meta?.is_blacklisted ?? false,

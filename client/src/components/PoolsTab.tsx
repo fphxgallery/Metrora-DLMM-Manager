@@ -11,11 +11,12 @@ export interface PoolRow {
   baseFeePct: number;
   tvl: number;
   currentPrice: number;
-  apr: number;
-  apy: number;
+  /** Daily fee/TVL percentage. The API calls this "apr"; it is a DAILY rate. */
+  feeTvlDailyPct: number;
+  /** feeTvlDailyPct compounded over 365 days, in percent. */
+  apyPct: number;
   volume24h: number;
   fees24h: number;
-  feeTvlRatio24h: number;
   hasFarm: boolean;
   isBlacklisted: boolean;
   tokenX: { symbol: string; mint: string; decimals: number; priceUsd: number };
@@ -33,8 +34,8 @@ export interface PoolDetail {
   variableFeePct: number;
   maxFeePct: number;
   tvl: number | null;
-  apr: number | null;
-  apy: number | null;
+  feeTvlDailyPct: number | null;
+  apyPct: number | null;
   volume24h: number | null;
   fees24h: number | null;
   isBlacklisted: boolean;
@@ -49,7 +50,6 @@ const SORTS = [
   { value: "tvl:desc", label: "TVL" },
   { value: "fee_tvl_ratio_24h:desc", label: "Fee/TVL 24h" },
   { value: "fee_tvl_ratio_1h:desc", label: "Fee/TVL 1h" },
-  { value: "apr_24h:desc", label: "APR 24h" },
   { value: "pool_created_at:desc", label: "Newest" },
 ];
 
@@ -147,8 +147,8 @@ export function PoolsTab() {
                 <th>TVL</th>
                 <th>Vol 24h</th>
                 <th>Fees 24h</th>
-                <th>Fee/TVL 24h</th>
-                <th>APR</th>
+                <th>Fee/TVL daily</th>
+                <th>APY</th>
                 <th />
               </tr>
             </thead>
@@ -171,8 +171,8 @@ export function PoolsTab() {
                   <td>{fmtUsd(p.tvl)}</td>
                   <td>{fmtUsd(p.volume24h)}</td>
                   <td>{fmtUsd(p.fees24h)}</td>
-                  <td>{fmtPct(p.feeTvlRatio24h)}</td>
-                  <td className={p.apr > 0.2 ? "good" : ""}>{fmtPct(p.apr * 100)}</td>
+                  <td>{fmtPct(p.feeTvlDailyPct, 3)}</td>
+                  <td className={p.apyPct > 50 ? "good" : ""}>{fmtPct(p.apyPct, 1)}</td>
                   <td>
                     <button className="btn" onClick={() => void select(p.address)}>
                       INSPECT
@@ -213,7 +213,11 @@ function PoolDetailPanel({ detail, onClose }: { detail: PoolDetail; onClose: () 
         <Tile label="TVL" value={detail.tvl == null ? "—" : fmtUsd(detail.tvl)} />
         <Tile label="Vol 24h" value={detail.volume24h == null ? "—" : fmtUsd(detail.volume24h)} />
         <Tile label="Fees 24h" value={detail.fees24h == null ? "—" : fmtUsd(detail.fees24h)} />
-        <Tile label="APR" value={detail.apr == null ? "—" : fmtPct(detail.apr * 100)} />
+        <Tile
+          label="APY"
+          value={detail.apyPct == null ? "—" : fmtPct(detail.apyPct, 1)}
+          sub={detail.feeTvlDailyPct == null ? undefined : `${fmtPct(detail.feeTvlDailyPct, 3)}/day fee/TVL`}
+        />
       </div>
 
       <BinChart
