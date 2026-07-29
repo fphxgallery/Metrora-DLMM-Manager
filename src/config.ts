@@ -57,6 +57,13 @@ export interface Config {
   maxActiveBinSlippage: number;
   /** Swap slippage for the ratio leg. 0 = let Jupiter pick (dynamic slippage). */
   swapSlippageBps: number;
+  /**
+   * Hard ceiling, in LAMPORTS, on the priority fee Jupiter may attach to one
+   * swap. Jupiter builds and signs the swap itself, so PRIORITY_FEE_MICROLAMPORTS
+   * — a per-CU price applied to transactions we build — has no bearing on it.
+   * This is the only control we have over that leg's fee.
+   */
+  maxSwapPriorityLamports: number;
   /** Hard ceiling on how much of a position's value one rebalance may swap. */
   maxSwapPctOfPosition: number;
   /**
@@ -110,6 +117,9 @@ export function loadConfig(): Config {
     ratioToleranceBps: num("RATIO_TOLERANCE_BPS", 3000),
     maxActiveBinSlippage: num("MAX_ACTIVE_BIN_SLIPPAGE", 15),
     swapSlippageBps: num("SWAP_SLIPPAGE_BPS", 0),
+    // ~0.015 SOL. Generous next to observed swap fees of 16k-75k lamports, and
+    // still small enough that a congestion spike cannot quietly eat a position.
+    maxSwapPriorityLamports: num("MAX_SWAP_PRIORITY_LAMPORTS", 200_000),
     maxSwapPctOfPosition: num("MAX_SWAP_PCT_OF_POSITION", 50),
     // 200bps = 2%, the default in Meteora's own swap settings.
     maxSwapPriceImpactBps: num("MAX_SWAP_PRICE_IMPACT_BPS", 200),
@@ -165,6 +175,19 @@ function validate(cfg: Config): void {
   }
   if (cfg.maxSwapPctOfPosition <= 0 || cfg.maxSwapPctOfPosition > 100) {
     throw new Error(`MAX_SWAP_PCT_OF_POSITION must be in (0,100] (got ${cfg.maxSwapPctOfPosition})`);
+  }
+  // Capped well below anything defensible for a single swap: the point of this
+  // setting is to stop a runaway fee, so an absurd value must not be accepted.
+  if (!Number.isInteger(cfg.maxSwapPriorityLamports) || cfg.maxSwapPriorityLamports <= 0) {
+    throw new Error(
+      `MAX_SWAP_PRIORITY_LAMPORTS must be a positive integer (got ${cfg.maxSwapPriorityLamports})`,
+    );
+  }
+  if (cfg.maxSwapPriorityLamports > 100_000_000) {
+    throw new Error(
+      `MAX_SWAP_PRIORITY_LAMPORTS must be <= 100000000 (0.1 SOL) — it is a safety ceiling on ONE ` +
+        `swap's priority fee, not a budget; got ${cfg.maxSwapPriorityLamports}`,
+    );
   }
   if (cfg.maxSwapPriceImpactBps <= 0 || cfg.maxSwapPriceImpactBps > 10_000) {
     throw new Error(`MAX_SWAP_PRICE_IMPACT_BPS must be in (0,10000] (got ${cfg.maxSwapPriceImpactBps})`);

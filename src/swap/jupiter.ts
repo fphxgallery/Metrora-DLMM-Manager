@@ -78,9 +78,15 @@ export class JupiterSwap {
       // SWAP_SLIPPAGE_BPS=0 means "let Jupiter decide", capped generously; a
       // fixed value pins it instead.
       ...(this.cfg.swapSlippageBps > 0 ? {} : { dynamicSlippage: { maxBps: 300 } }),
+      // An explicit lamport ceiling. This used to be
+      // `priorityFeeMicroLamports * 1000`, which is dimensionally meaningless — a
+      // per-CU price scaled by an arbitrary factor — and produced a 0.2 SOL cap
+      // on a single swap's priority fee. Jupiter's "medium" level has always
+      // chosen far less, so it never bound, but it was a safety ceiling offering
+      // no safety.
       prioritizationFeeLamports: {
         priorityLevelWithMaxLamports: {
-          maxLamports: this.cfg.priorityFeeMicroLamports * 1000,
+          maxLamports: this.cfg.maxSwapPriorityLamports,
           priorityLevel: "medium",
         },
       },
