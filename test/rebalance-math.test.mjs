@@ -138,7 +138,7 @@ test("toUi round-trips toRaw", () => {
 // the entry and leaves the withdrawn surplus stranded in the wallet, so the
 // drifted case below is the one that actually costs money.
 test("legLanded reads a landed leg that drifted off the plan's target", () => {
-  const entry = { sourceMinBinId: 0, sourceMaxBinId: 20, targetMinBinId: 90, targetMaxBinId: 110 };
+  const entry = { sigs: [], sourceMinBinId: 0, sourceMaxBinId: 20, targetMinBinId: 90, targetMaxBinId: 110 };
 
   // Landed exactly where the plan said.
   assert.equal(legLanded(entry, { lowerBinId: 90, upperBinId: 110 }), true);
@@ -156,7 +156,27 @@ test("legLanded reads a landed leg that drifted off the plan's target", () => {
 test("legLanded falls back to the exact target when source bins are absent", () => {
   // Entries journalled before sourceMin/MaxBinId existed. No source data means
   // no drift tolerance is possible — don't guess, use the old exact test.
-  const legacy = { targetMinBinId: 90, targetMaxBinId: 110 };
+  const legacy = { sigs: [], targetMinBinId: 90, targetMaxBinId: 110 };
   assert.equal(legLanded(legacy, { lowerBinId: 90, upperBinId: 110 }), true);
   assert.equal(legLanded(legacy, { lowerBinId: 91, upperBinId: 111 }), false);
+});
+
+// Seen live 2026-07-29: a withdraw failed on chain (no signature recorded), the
+// engine retried 30s later, and the retry's withdraw landed and moved the range.
+// Judging the FAILED entry by range alone read that move as its own, which would
+// have let it spend the retry's stranded funds.
+test("legLanded refuses to guess when two entries target one position", () => {
+  const failed = { sigs: [], sourceMinBinId: -6560, sourceMaxBinId: -6492, targetMinBinId: -6543, targetMaxBinId: -6475 };
+  const moved = { lowerBinId: -6544, upperBinId: -6476 }; // moved by the OTHER entry
+
+  assert.equal(legLanded(failed, moved), true, "range alone says landed — the old, wrong answer");
+  assert.equal(legLanded(failed, moved, { ambiguous: true }), false, "but not attributable, so no");
+});
+
+test("legLanded trusts a recorded signature over any range inference", () => {
+  // Signatures are journalled only after every send in the leg returned, so one
+  // being present outranks circumstantial evidence — even ambiguity.
+  const landedEntry = { sigs: ["SIG"], sourceMinBinId: -6560, sourceMaxBinId: -6492, targetMinBinId: -6544, targetMaxBinId: -6476 };
+  assert.equal(legLanded(landedEntry, { lowerBinId: -6560, upperBinId: -6492 }), true, "even if the range looks unmoved");
+  assert.equal(legLanded(landedEntry, { lowerBinId: -6544, upperBinId: -6476 }, { ambiguous: true }), true);
 });

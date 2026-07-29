@@ -485,6 +485,13 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
 
   log.warn({ count: pending.length }, "resuming unfinished rebalances");
 
+  // How many pending entries target each position. More than one and a range
+  // change can no longer be attributed to any single entry — see legLanded.
+  const pendingPerPosition = new Map<string, number>();
+  for (const e of pending) {
+    pendingPerPosition.set(e.positionPk, (pendingPerPosition.get(e.positionPk) ?? 0) + 1);
+  }
+
   for (const entry of pending) {
     try {
       if (!client.wallet()) {
@@ -512,7 +519,9 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
         log.warn({ journalId: entry.id, positionPk: entry.positionPk }, "resume target position gone — marked failed");
         continue;
       }
-      const landed = legLanded(entry, positionData);
+      const landed = legLanded(entry, positionData, {
+        ambiguous: (pendingPerPosition.get(entry.positionPk) ?? 0) > 1,
+      });
 
       if (entry.phase === "atomic") {
         // One instruction: either it landed or nothing happened. Either way
@@ -619,9 +628,28 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
  * target comparison rather than guessing from data that isn't there.
  */
 export function legLanded(
-  entry: Pick<JournalEntry, "targetMinBinId" | "targetMaxBinId" | "sourceMinBinId" | "sourceMaxBinId">,
+  entry: Pick<
+    JournalEntry,
+    "targetMinBinId" | "targetMaxBinId" | "sourceMinBinId" | "sourceMaxBinId" | "sigs"
+  >,
   positionData: Pick<PositionData, "lowerBinId" | "upperBinId">,
+  opts: { ambiguous?: boolean } = {},
 ): boolean {
+  // Positive proof, and it outranks any inference: signatures are journalled
+  // only after every send in the leg has returned, so one being present means
+  // the leg completed. A leg that threw — at simulation or on chain — never
+  // reaches that write, and a transaction that failed on chain changed no state
+  // anyway, so the range is untouched either way.
+  if (entry.sigs.length > 0) return true;
+
+  // Without a signature the only remaining evidence is the range, and that is
+  // circumstantial: it says the position moved, not WHO moved it. With two
+  // pending entries against the same position — a failed attempt followed by a
+  // successful retry — the retry's landed withdraw moves the range, and the
+  // failed entry would read that as its own and go on to spend the retry's
+  // stranded funds. Seen live on 2026-07-29. Refuse to guess.
+  if (opts.ambiguous) return false;
+
   if (entry.sourceMinBinId !== undefined && entry.sourceMaxBinId !== undefined) {
     return (
       positionData.lowerBinId !== entry.sourceMinBinId || positionData.upperBinId !== entry.sourceMaxBinId
