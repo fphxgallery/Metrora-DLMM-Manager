@@ -171,6 +171,7 @@ export async function executeRebalance(deps: RebalanceDeps, plan: RebalancePlan)
     targetMaxBinId: plan.targetRange[1],
     sourceMinBinId: plan.currentRange[0],
     sourceMaxBinId: plan.currentRange[1],
+    rentLamports: plan.estCost.rentLamports,
     strategyType: plan.strategyType,
     startedAt: Date.now(),
     updatedAt: Date.now(),
@@ -561,6 +562,10 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
         continue;
       }
 
+      // Everything this resume sends, so the signatures and the fees they cost
+      // can be recorded rather than thrown away.
+      const resumeResults: SendResult[] = [];
+
       if (entry.phase === "withdraw" || entry.phase === "swap") {
         const fromMint = new PublicKey(inMint);
         const fromProgram = fromMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
@@ -575,19 +580,21 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
         }
         store.updateJournal(entry.id, { phase: "swap" });
         const swapResult = await runSwapLeg(deps, entry, planWithSwapFrom(plan, entry), amount);
+        resumeResults.push(swapResult.result);
         store.updateJournal(entry.id, { phase: "deposit" });
-        await depositProceeds(deps, entry, planWithSwapFrom(plan, entry), swapResult.received);
+        resumeResults.push(
+          ...(await depositProceeds(deps, entry, planWithSwapFrom(plan, entry), swapResult.received)),
+        );
       } else if (entry.phase === "deposit") {
         const toMint = new PublicKey(outMint);
         const toProgram = toMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
         const available = await client.tokenBalance(toMint, toProgram);
         const intended = new BN(entry.swap?.outAmount ?? "0");
         const amount = intended.isZero() ? available : BN.min(intended, available);
-        await depositProceeds(deps, entry, planWithSwapFrom(plan, entry), amount);
+        resumeResults.push(...(await depositProceeds(deps, entry, planWithSwapFrom(plan, entry), amount)));
       }
 
-      store.updateJournal(entry.id, { phase: "done" });
-      log.warn({ journalId: entry.id }, "rebalance resumed and completed");
+      await finishResumed(deps, entry, resumeResults);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       store.updateJournal(entry.id, { error: `resume failed: ${message}` });
@@ -621,6 +628,75 @@ export function legLanded(
     );
   }
   return positionData.lowerBinId === entry.targetMinBinId && positionData.upperBinId === entry.targetMaxBinId;
+}
+
+/**
+ * Closes out a resumed entry.
+ *
+ * Three things the resume path used to drop on the floor:
+ *
+ * - The signatures it produced. `sigs` kept only the legs from before the
+ *   interruption, so the transaction that actually completed the recovery
+ *   appeared nowhere in the journal and had to be dug out of the app log.
+ * - The stale `error`. Marking `phase: "done"` left the failure text that
+ *   stranded the entry in place, so a recovered rebalance renders in the
+ *   dashboard as though it had failed.
+ * - The cost ledger entry. A resumed rebalance was never passed to
+ *   `recordRebalance`, so its fees went uncounted in METRICS and — worse —
+ *   `lastRebalanceAt` stayed stale, leaving the cooldown guard blind to a
+ *   rebalance that had just happened.
+ */
+async function finishResumed(
+  deps: RebalanceDeps,
+  entry: JournalEntry,
+  results: SendResult[],
+): Promise<void> {
+  const { store, log } = deps;
+  const newSigs = sigsOf(results);
+  const allSigs = [...entry.sigs, ...newSigs];
+
+  store.updateJournal(entry.id, { phase: "done", sigs: allSigs, error: undefined });
+
+  if (newSigs.length === 0) {
+    // Dry-run, or there was nothing left to move. Either way it did not happen,
+    // so it must not enter the ledger or start a cooldown.
+    log.warn({ journalId: entry.id }, "rebalance resumed with nothing to send — not recorded");
+    return;
+  }
+
+  // Priced across ALL the legs, including the ones that landed before the
+  // interruption: those fees were really paid, and charging only the resumed
+  // portion is what kept costUsd understated.
+  const costLamports = await sumFees(deps, allSigs);
+  store.recordRebalance({
+    ts: Date.now(),
+    positionPk: entry.positionPk,
+    poolAddress: entry.poolAddress,
+    path: entry.path,
+    fromRange: [entry.sourceMinBinId ?? entry.targetMinBinId, entry.sourceMaxBinId ?? entry.targetMaxBinId],
+    toRange: [entry.targetMinBinId, entry.targetMaxBinId],
+    costLamports,
+    rentLamports: entry.rentLamports ?? 0,
+    sigs: allSigs,
+  });
+  log.warn({ journalId: entry.id, sigs: newSigs, costLamports }, "rebalance resumed and completed");
+}
+
+/** Fees actually paid across a set of signatures. Best effort — a miss adds 0. */
+async function sumFees(deps: RebalanceDeps, sigs: string[]): Promise<number> {
+  let total = 0;
+  for (const sig of sigs) {
+    try {
+      const tx = await deps.client.connection.getTransaction(sig, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      });
+      total += tx?.meta?.fee ?? 0;
+    } catch {
+      /* a fee lookup must never fail a completed recovery */
+    }
+  }
+  return total;
 }
 
 /** Uses the journalled swap direction, which is what the stranded funds match. */

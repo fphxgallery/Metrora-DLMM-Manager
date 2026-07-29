@@ -56,6 +56,12 @@ export interface JournalEntry {
    */
   sourceMinBinId?: number;
   sourceMaxBinId?: number;
+  /**
+   * Rent this rebalance was expected to pay for new bin arrays. Captured at open
+   * because a resume cannot re-derive it — by then the arrays already exist, so
+   * a fresh estimate reads zero and the cost ledger would undercount.
+   */
+  rentLamports?: number;
   strategyType: StrategyTypeName;
   startedAt: number;
   updatedAt: number;

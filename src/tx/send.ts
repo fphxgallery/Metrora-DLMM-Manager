@@ -208,7 +208,13 @@ export class TxSender {
         throw new TxError(`${label} failed on chain: ${JSON.stringify(value.err)}`, simLogs);
       }
       if (value?.confirmationStatus === "confirmed" || value?.confirmationStatus === "finalized") {
-        if (attempt > 1) this.log.info({ label, signature, attempt }, "confirmed after rebroadcast");
+        // Attempt 2 is the ORDINARY path: the first poll fires immediately after
+        // the broadcast, when nothing could possibly be confirmed yet. Logging a
+        // rebroadcast there implies the retry did work it did not do. Only from
+        // the third poll on has a resend plausibly mattered.
+        if (attempt >= 3) {
+          this.log.info({ label, signature, rebroadcasts: attempt - 1 }, "confirmed after rebroadcast");
+        }
         return signature;
       }
 
