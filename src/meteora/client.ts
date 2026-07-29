@@ -1,5 +1,5 @@
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { NATIVE_MINT, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, type TransactionInstruction } from "@solana/web3.js";
+import { NATIVE_MINT, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import BN from "bn.js";
 import { existsSync, statSync } from "node:fs";
 import type { Config } from "../config.js";
@@ -115,6 +115,27 @@ export class MeteoraClient {
       raw = raw.add(new BN(Math.max(0, lamports - reserve)));
     }
     return raw;
+  }
+
+  /**
+   * Idempotent create instructions for the wallet's tokenX/Y ATAs of a pool.
+   *
+   * `rebalancePosition()` (unlike the open/deposit builders) does not create
+   * these itself — and wSOL ATAs in particular are commonly wrapped, used, and
+   * closed within a single deposit tx, so a position that just opened can
+   * already have a missing tokenX ATA by the time it's rebalanced. Prepend
+   * these to a rebalance tx rather than assuming the ATA still exists.
+   */
+  ataIxs(pool: DlmmPool): TransactionInstruction[] {
+    const owner = this.requireWallet().publicKey;
+    const sides: { mint: PublicKey; program: PublicKey }[] = [
+      { mint: pool.tokenX.publicKey, program: pool.tokenX.owner },
+      { mint: pool.tokenY.publicKey, program: pool.tokenY.owner },
+    ];
+    return sides.map(({ mint, program }) => {
+      const ata = getAssociatedTokenAddressSync(mint, owner, true, program);
+      return createAssociatedTokenAccountIdempotentInstruction(owner, ata, owner, mint, program);
+    });
   }
 
   /** A pool client with on-chain state no older than POOL_STATE_TTL_MS. */

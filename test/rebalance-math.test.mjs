@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import BN from "bn.js";
 
-import { balancedTargetRange, planSwapLeg } from "../dist/meteora/rebalance.js";
+import { balancedTargetRange, legLanded, planSwapLeg } from "../dist/meteora/rebalance.js";
 import { rangeStatus, toRaw, toUi, valuePosition } from "../dist/meteora/pricing.js";
 
 // The target range must match the SDK's BalancedStrategyBuilder exactly, or the
@@ -131,4 +131,32 @@ test("toUi round-trips toRaw", () => {
   ]) {
     assert.equal(toUi(toRaw(ui, decimals), decimals), ui);
   }
+});
+
+// A rebalance leg's "did it land?" test decides whether resumeJournal finishes
+// the remaining legs or writes the entry off. Getting it wrong on path B closes
+// the entry and leaves the withdrawn surplus stranded in the wallet, so the
+// drifted case below is the one that actually costs money.
+test("legLanded reads a landed leg that drifted off the plan's target", () => {
+  const entry = { sourceMinBinId: 0, sourceMaxBinId: 20, targetMinBinId: 90, targetMaxBinId: 110 };
+
+  // Landed exactly where the plan said.
+  assert.equal(legLanded(entry, { lowerBinId: 90, upperBinId: 110 }), true);
+
+  // Landed, but the active bin moved between plan and send so the builder
+  // re-centred one bin over. Still landed — this is the case that used to be
+  // misread as "withdraw leg did not land".
+  assert.equal(legLanded(entry, { lowerBinId: 91, upperBinId: 111 }), true);
+  assert.equal(legLanded(entry, { lowerBinId: 85, upperBinId: 105 }), true);
+
+  // Never landed: the position is untouched at its source range.
+  assert.equal(legLanded(entry, { lowerBinId: 0, upperBinId: 20 }), false);
+});
+
+test("legLanded falls back to the exact target when source bins are absent", () => {
+  // Entries journalled before sourceMin/MaxBinId existed. No source data means
+  // no drift tolerance is possible — don't guess, use the old exact test.
+  const legacy = { targetMinBinId: 90, targetMaxBinId: 110 };
+  assert.equal(legLanded(legacy, { lowerBinId: 90, upperBinId: 110 }), true);
+  assert.equal(legLanded(legacy, { lowerBinId: 91, upperBinId: 111 }), false);
 });

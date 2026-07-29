@@ -47,6 +47,7 @@ export interface PositionView {
     cooldownMin?: number;
     rebalanceCount: number;
     lastRebalanceAt?: number;
+    openedAt: number;
     timeInRangePct: number | null;
   } | null;
 
@@ -238,6 +239,7 @@ function buildView(args: {
           cooldownMin: managed.cooldownMin,
           rebalanceCount: managed.rebalanceCount,
           lastRebalanceAt: managed.lastRebalanceAt,
+          openedAt: managed.openedAt,
           timeInRangePct:
             managed.pollsTotal > 0 ? (managed.pollsInRange / managed.pollsTotal) * 100 : null,
         }
@@ -247,7 +249,7 @@ function buildView(args: {
       ? {
           pnlUsd: Number(pnl.pnlUsd),
           pnlPctChange: Number(pnl.pnlPctChange),
-          allTimeFeesUsd: Number(pnl.allTimeFees?.total ?? 0),
+          allTimeFeesUsd: Number(pnl.allTimeFees?.total?.usd ?? 0),
           createdAt: pnl.createdAt,
         }
       : null,

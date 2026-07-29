@@ -15,6 +15,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly logs?: string[],
   ) {
     super(message);
   }
@@ -33,8 +34,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const text = await res.text();
   const body = text ? (JSON.parse(text) as unknown) : {};
   if (!res.ok) {
-    const err = (body as { error?: string }).error ?? `HTTP ${res.status}`;
-    throw new ApiError(err, res.status);
+    const b = body as { error?: string; logs?: string[] };
+    throw new ApiError(b.error ?? `HTTP ${res.status}`, res.status, b.logs);
   }
   return body as T;
 }

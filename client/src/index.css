@@ -140,6 +140,13 @@ a {
   padding: 12px;
 }
 
+.group-label {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+
 .tile .label {
   font-size: 10px;
   letter-spacing: 1.5px;

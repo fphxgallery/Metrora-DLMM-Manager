@@ -169,10 +169,19 @@ export async function executeRebalance(deps: RebalanceDeps, plan: RebalancePlan)
     phase: plan.path === "A" ? "atomic" : "withdraw",
     targetMinBinId: plan.targetRange[0],
     targetMaxBinId: plan.targetRange[1],
+    sourceMinBinId: plan.currentRange[0],
+    sourceMaxBinId: plan.currentRange[1],
     strategyType: plan.strategyType,
     startedAt: Date.now(),
     updatedAt: Date.now(),
     sigs: [],
+    // Path B: journal the swap DIRECTION before anything is sent. The amount is
+    // not known until the withdraw lands, but the mints are known now — and
+    // without them, a crash between the withdraw landing and the phase->"swap"
+    // update leaves an entry that resume cannot identify the stranded funds from.
+    ...(plan.path === "B" && plan.swap
+      ? { swap: { inMint: plan.swap.fromMint, outMint: plan.swap.toMint, inAmount: "0" } }
+      : {}),
   };
   store.openJournal(entry);
   log.info(
@@ -259,7 +268,11 @@ async function runAtomic(deps: RebalanceDeps, plan: RebalancePlan, entry: Journa
     results.push(await sender.sendInstructions(initBinArrayInstructions, [wallet], "init bin arrays"));
   }
   results.push(
-    await sender.send(new Transaction().add(...rebalancePositionInstruction), [wallet], "rebalance (atomic)"),
+    await sender.send(
+      new Transaction().add(...client.ataIxs(pool), ...rebalancePositionInstruction),
+      [wallet],
+      "rebalance (atomic)",
+    ),
   );
 
   client.invalidate(plan.poolAddress);
@@ -322,6 +335,20 @@ async function withdrawAndRecentre(
   const position = new PublicKey(plan.positionPk);
   const { positionData } = await pool.getPosition(position);
 
+  // Upper bound on what this leg will release into the wallet, journalled
+  // BEFORE the send so a crash immediately after it lands still leaves resume a
+  // cap to work from. Without one, resume falls back to the entire wallet
+  // balance of that mint and could swap funds this rebalance never withdrew.
+  const xBps = plan.swap!.xWithdrawBps;
+  const sideRaw =
+    xBps > 0
+      ? new BN(positionData.totalXAmount).add(positionData.feeX)
+      : new BN(positionData.totalYAmount).add(positionData.feeY);
+  const expectedIn = sideRaw.muln(xBps > 0 ? xBps : plan.swap!.yWithdrawBps).divn(10_000);
+  deps.store.updateJournal(entry.id, {
+    swap: { inMint: plan.swap!.fromMint, outMint: plan.swap!.toMint, inAmount: expectedIn.toString() },
+  });
+
   const sim = await pool.simulateRebalancePositionWithBalancedStrategy(
     position,
     positionData,
@@ -342,7 +369,11 @@ async function withdrawAndRecentre(
     results.push(await sender.sendInstructions(initBinArrayInstructions, [wallet], "init bin arrays"));
   }
   results.push(
-    await sender.send(new Transaction().add(...rebalancePositionInstruction), [wallet], "rebalance (withdraw leg)"),
+    await sender.send(
+      new Transaction().add(...client.ataIxs(pool), ...rebalancePositionInstruction),
+      [wallet],
+      "rebalance (withdraw leg)",
+    ),
   );
   deps.store.updateJournal(entry.id, { sigs: sigsOf(results) });
   return results;
@@ -461,19 +492,36 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
       }
 
       const pool = await client.getPool(entry.poolAddress, { fresh: true });
-      const { positionData } = await pool.getPosition(new PublicKey(entry.positionPk));
-      const atTarget =
-        positionData.lowerBinId === entry.targetMinBinId && positionData.upperBinId === entry.targetMaxBinId;
+      let positionData: PositionData;
+      try {
+        ({ positionData } = await pool.getPosition(new PublicKey(entry.positionPk)));
+      } catch (e) {
+        // The account this entry was resuming toward is gone — closed via Exit,
+        // or replaced by a fresh open under the same pool. There is nothing left
+        // to finish: any funds that were mid-flight either landed in the wallet
+        // (check the balance) or were already swept into whatever position
+        // exists now. Retrying forever is worse than surfacing that plainly, so
+        // this is terminal rather than another `error`-only update that leaves
+        // it "pending" indefinitely.
+        store.updateJournal(entry.id, {
+          phase: "failed",
+          error: `target position no longer exists (${e instanceof Error ? e.message : String(e)}) — ` +
+            "any in-flight funds are either back in the wallet or already in a newer position; check balances manually",
+        });
+        log.warn({ journalId: entry.id, positionPk: entry.positionPk }, "resume target position gone — marked failed");
+        continue;
+      }
+      const landed = legLanded(entry, positionData);
 
       if (entry.phase === "atomic") {
-        // One instruction: either it landed (position is at the target) or
-        // nothing happened. Either way there is nothing half-done to finish.
-        store.updateJournal(entry.id, { phase: atTarget ? "done" : "failed", error: entry.error ?? "interrupted" });
-        log.warn({ journalId: entry.id, landed: atTarget }, "atomic rebalance resolved from chain state");
+        // One instruction: either it landed or nothing happened. Either way
+        // there is nothing half-done to finish.
+        store.updateJournal(entry.id, { phase: landed ? "done" : "failed", error: entry.error ?? "interrupted" });
+        log.warn({ journalId: entry.id, landed }, "atomic rebalance resolved from chain state");
         continue;
       }
 
-      if (entry.phase === "withdraw" && !atTarget) {
+      if (entry.phase === "withdraw" && !landed) {
         // The withdraw leg never landed, so no funds are stranded. Drop it and
         // let the normal trigger re-plan against current prices.
         store.updateJournal(entry.id, { phase: "failed", error: "withdraw leg did not land; re-planning" });
@@ -481,16 +529,40 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
         continue;
       }
 
-      // From here the position is at its target range and the surplus is sitting
-      // in the wallet. Re-plan the remaining legs from actual balances.
+      // From here the re-centre landed (at the target, or near it after drift)
+      // and the surplus is sitting in the wallet. Re-plan the remaining legs
+      // from actual balances. Note the fresh plan will usually have NO swap leg:
+      // the surplus is out of the position, so the position now reads balanced.
+      // That is why the mints below come from the journal first, not the plan.
       const plan = await planRebalance(deps, {
         positionPk: entry.positionPk,
         poolAddress: entry.poolAddress,
         strategyType: entry.strategyType,
       });
 
+      // Which token is stranded. `new PublicKey("")` throws, and the generic
+      // catch below sets only `error` — never `phase` — so an unidentifiable
+      // entry used to retry identically on every boot and stay pending forever.
+      // Terminal, with instructions, instead.
+      const inMint = entry.swap?.inMint || plan.swap?.fromMint;
+      const outMint = entry.swap?.outMint || plan.swap?.toMint;
+      if (!inMint || !outMint) {
+        store.updateJournal(entry.id, {
+          phase: "failed",
+          error:
+            "the withdraw leg landed but the swap direction was never journalled — the withdrawn " +
+            "surplus is sitting in the wallet; re-deposit it with POST /api/positions/" +
+            `${entry.positionPk}/add`,
+        });
+        log.error(
+          { journalId: entry.id, positionPk: entry.positionPk },
+          "resume: swap direction unknown — marked failed, surplus is in the wallet",
+        );
+        continue;
+      }
+
       if (entry.phase === "withdraw" || entry.phase === "swap") {
-        const fromMint = new PublicKey(entry.swap?.inMint ?? plan.swap?.fromMint ?? "");
+        const fromMint = new PublicKey(inMint);
         const fromProgram = fromMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
         const available = await client.tokenBalance(fromMint, fromProgram);
         const intended = new BN(entry.swap?.inAmount ?? "0");
@@ -506,7 +578,7 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
         store.updateJournal(entry.id, { phase: "deposit" });
         await depositProceeds(deps, entry, planWithSwapFrom(plan, entry), swapResult.received);
       } else if (entry.phase === "deposit") {
-        const toMint = new PublicKey(entry.swap?.outMint ?? "");
+        const toMint = new PublicKey(outMint);
         const toProgram = toMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
         const available = await client.tokenBalance(toMint, toProgram);
         const intended = new BN(entry.swap?.outAmount ?? "0");
@@ -522,6 +594,33 @@ export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
       log.error({ journalId: entry.id, err: message }, "resume failed — funds may be sitting in the wallet");
     }
   }
+}
+
+/**
+ * Whether a journalled rebalance leg actually landed on chain.
+ *
+ * The position's range is the only honest evidence, but it has to be compared
+ * against where the position STARTED, not against the plan's target.
+ * `simulateRebalancePositionWithBalancedStrategy` re-centres on the active bin
+ * as of the send, which drifts from the bin the plan was computed on — several
+ * RPC round-trips earlier, and one bin is only 0.04% at bin step 4. Comparing
+ * against the target reads a perfectly good landed leg as "never landed" the
+ * moment price moves, which for path B closes the entry and strands the
+ * withdrawn surplus in the wallet.
+ *
+ * Entries journalled before source bins were recorded fall back to the exact
+ * target comparison rather than guessing from data that isn't there.
+ */
+export function legLanded(
+  entry: Pick<JournalEntry, "targetMinBinId" | "targetMaxBinId" | "sourceMinBinId" | "sourceMaxBinId">,
+  positionData: Pick<PositionData, "lowerBinId" | "upperBinId">,
+): boolean {
+  if (entry.sourceMinBinId !== undefined && entry.sourceMaxBinId !== undefined) {
+    return (
+      positionData.lowerBinId !== entry.sourceMinBinId || positionData.upperBinId !== entry.sourceMaxBinId
+    );
+  }
+  return positionData.lowerBinId === entry.targetMinBinId && positionData.upperBinId === entry.targetMaxBinId;
 }
 
 /** Uses the journalled swap direction, which is what the stranded funds match. */

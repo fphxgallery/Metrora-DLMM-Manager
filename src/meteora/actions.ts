@@ -162,7 +162,14 @@ export async function openPosition(deps: ActionDeps, params: OpenParams): Promis
       poolAddress: params.poolAddress,
       auto: params.auto ?? false,
       rangeBins,
-      strategyType: strategyName,
+      // Only an EXPLICIT choice becomes a per-position override — unlike
+      // rangeBins (fixed for good at creation), strategyType governs every
+      // future rebalance's redeposit shape and must keep tracking the live
+      // global default unless the caller deliberately pinned it. Storing the
+      // resolved `strategyName` here instead of `params.strategyType` would
+      // silently freeze this position on whatever the default happened to be
+      // at open time, immune to later Settings changes.
+      strategyType: params.strategyType,
       openedAt: Date.now(),
       rebalanceCount: 0,
       pollsTotal: 0,

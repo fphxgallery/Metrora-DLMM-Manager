@@ -47,6 +47,15 @@ export interface JournalEntry {
   phase: RebalancePhase;
   targetMinBinId: number;
   targetMaxBinId: number;
+  /**
+   * The range the position occupied BEFORE this rebalance. Resume compares
+   * against this, not against the target: the rebalance builder re-centres on
+   * the active bin at send time, so what actually lands drifts from the target
+   * the plan was computed on. Optional — entries written before this field
+   * existed fall back to the exact-target comparison.
+   */
+  sourceMinBinId?: number;
+  sourceMaxBinId?: number;
   strategyType: StrategyTypeName;
   startedAt: number;
   updatedAt: number;

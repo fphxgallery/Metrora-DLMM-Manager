@@ -48,10 +48,16 @@ export interface PoolsResponse {
   data: DataApiPool[];
 }
 
+export interface TokenAmountWithUsd {
+  amount: string;
+  usd: string;
+  amountSol: string;
+}
+
 export interface TokenPairWithTotal {
-  tokenX: string;
-  tokenY: string;
-  total: string;
+  tokenX: TokenAmountWithUsd;
+  tokenY: TokenAmountWithUsd;
+  total: { usd: string; sol: string };
 }
 
 export interface PositionPnL {
@@ -75,11 +81,20 @@ export interface PositionPnL {
 }
 
 export interface PositionPnLResponse {
-  data: PositionPnL[];
+  positions: PositionPnL[];
   [k: string]: unknown;
 }
 
 // --------------------------------------------------------------- client ----
+
+/**
+ * The SOL/USDC reference pool is identified by MINT ADDRESS, never by name.
+ * Pool names come from token metadata, which anyone can set: a `query=SOL-USDC`
+ * name search returns ~123 pools, 13 of which are not SOL/USDC at all
+ * ("USDT sol-USDC", "SOL-USDC-USDT", …) and price at 0.
+ */
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 interface CacheEntry {
   at: number;
@@ -96,6 +111,8 @@ interface CacheEntry {
 export class DataApi {
   private cache = new Map<string, CacheEntry>();
   private inflight = new Map<string, Promise<unknown>>();
+  /** Last SOL price that passed the mint check — see solPriceUsd(). */
+  private lastSolPriceUsd = 0;
 
   constructor(
     private readonly cfg: Config,
@@ -175,20 +192,45 @@ export class DataApi {
       `/positions/${poolAddress}/pnl?${qs}`,
       this.cfg.dataApiCacheMs,
     );
-    return Array.isArray(res.data) ? res.data : [];
+    return Array.isArray(res.positions) ? res.positions : [];
   }
 
   /**
    * SOL/USD, for turning lamport costs (fees, rent) into the same units as the
-   * fee income they are weighed against. Read off the deepest SOL-USDC pool and
-   * cached for a minute — a cost guard does not need tick-level precision.
+   * fee income they are weighed against. Read off the deepest real SOL-USDC pool
+   * and cached for a minute — a cost guard does not need tick-level precision.
+   *
+   * Selected by mint address on both sides, and the mints are re-checked on the
+   * response. `filter_by` returns an EMPTY SET for a field it does not
+   * recognise rather than erroring, so an upstream rename would otherwise
+   * silently degrade this to "whatever pool came back first".
    */
   async solPriceUsd(): Promise<number> {
-    const res = await this.fetchJson<PoolsResponse>(
-      "/pools?query=SOL-USDC&sort_by=tvl:desc&page_size=1",
-      60_000,
-    );
-    return res.data[0]?.token_x.price ?? 0;
+    const qs = new URLSearchParams({
+      filter_by: `token_x=${WSOL_MINT} && token_y=${USDC_MINT}`,
+      sort_by: "tvl:desc",
+      page_size: "5",
+    });
+    try {
+      const res = await this.fetchJson<PoolsResponse>(`/pools?${qs}`, 60_000);
+      const pool = res.data?.find(
+        (p) => p.token_x.address === WSOL_MINT && p.token_y.address === USDC_MINT,
+      );
+      const price = pool?.token_x.price ?? 0;
+      if (Number.isFinite(price) && price > 0) {
+        this.lastSolPriceUsd = price;
+        return price;
+      }
+      this.log.warn({ returned: res.data?.length ?? 0 }, "no verified SOL-USDC pool in the data api response");
+    } catch (e) {
+      this.log.warn({ err: e instanceof Error ? e.message : String(e) }, "sol price lookup failed");
+    }
+    // Returning 0 here would zero `estCostUsd`, which Engine.costGuard reads as
+    // "no USD pricing available" and SKIPS — turning a data-api outage into
+    // unlimited rebalancing. The last verified price is a far better guess; 0
+    // only ever survives if a price was never once read (or on devnet, where
+    // these mints don't exist and there are no real funds to protect).
+    return this.lastSolPriceUsd;
   }
 
   /** Best-effort PnL lookup — never fails the caller, just returns nothing. */

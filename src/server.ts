@@ -136,7 +136,7 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
         const pnls = await ctx.dataApi.positionPnlSafe(pool, wallet);
         for (const pnl of pnls) {
           if (positions.some((p) => p.positionPk === pnl.positionAddress)) {
-            feesEarnedUsd += Number(pnl.allTimeFees?.total ?? 0);
+            feesEarnedUsd += Number(pnl.allTimeFees?.total?.usd ?? 0);
           }
         }
       }

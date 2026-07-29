@@ -35,6 +35,7 @@ export interface PositionView {
     cooldownMin?: number;
     rebalanceCount: number;
     lastRebalanceAt?: number;
+    openedAt: number;
     timeInRangePct: number | null;
   } | null;
   pnl: { pnlUsd: number; pnlPctChange: number; allTimeFeesUsd: number; createdAt?: number | null } | null;
@@ -230,31 +231,29 @@ function PositionCard({
 
       <RangeBar p={p} defaultEdgeBufferBins={defaultEdgeBufferBins} />
 
-      <div className="tiles" style={{ marginTop: 12 }}>
+      <div className="group-label">Position</div>
+      <div className="tiles" style={{ marginTop: 6, marginBottom: 14 }}>
         <Tile label="Value" value={fmtUsd(p.valueUsd)} sub={`${fmtAmount(p.amountX)} ${p.tokenX.symbol} · ${fmtAmount(p.amountY)} ${p.tokenY.symbol}`} />
-        <Tile label="Unclaimed fees" value={fmtUsd(p.feesUsd)} sub={`${fmtAmount(p.feeX)} ${p.tokenX.symbol} · ${fmtAmount(p.feeY)} ${p.tokenY.symbol}`} />
+        <Tile label="Range" value={`${fmtPrice(p.minPrice)} – ${fmtPrice(p.maxPrice)}`} sub={`${fmtNum(p.widthBins)} bins · active ${fmtPrice(p.activePrice)}`} />
+      </div>
+
+      <div className="group-label">Performance</div>
+      <div className="tiles" style={{ marginTop: 6 }}>
         <Tile
           label="PnL"
           value={p.pnl ? fmtUsd(p.pnl.pnlUsd) : "—"}
-          sub={p.pnl ? `${fmtPct(p.pnl.pnlPctChange)} · fees ${fmtUsd(p.pnl.allTimeFeesUsd)}` : "not indexed yet"}
+          sub={p.pnl ? `${fmtPct(p.pnl.pnlPctChange)} · lifetime fees ${fmtUsd(p.pnl.allTimeFeesUsd)}` : "not indexed yet"}
           cls={p.pnl ? (p.pnl.pnlUsd >= 0 ? "good" : "bad") : undefined}
         />
-        <Tile label="Range" value={`${fmtPrice(p.minPrice)} – ${fmtPrice(p.maxPrice)}`} sub={`${fmtNum(p.widthBins)} bins · active ${fmtPrice(p.activePrice)}`} />
-        <Tile
-          label="Rebalances"
-          value={p.managed ? fmtNum(p.managed.rebalanceCount) : "—"}
-          sub={p.managed?.lastRebalanceAt ? fmtAgo(p.managed.lastRebalanceAt) : "never"}
-        />
-        <Tile
-          label="Time in range"
-          value={p.managed?.timeInRangePct != null ? fmtPct(p.managed.timeInRangePct, 1) : "—"}
-          sub={p.managed ? "since managed" : "not managed"}
-        />
+        <Tile label="Unclaimed fees" value={fmtUsd(p.feesUsd)} sub={`${fmtAmount(p.feeX)} ${p.tokenX.symbol} · ${fmtAmount(p.feeY)} ${p.tokenY.symbol}`} />
+        <TimeInRangeTile p={p} defaultEdgeBufferBins={defaultEdgeBufferBins} />
       </div>
 
-      <div className="faint" style={{ marginTop: 8, fontSize: 11 }}>
-        position {shortPk(p.positionPk)} · pool {shortPk(p.poolAddress)} · bins {p.lowerBinId}…{p.upperBinId} · active{" "}
-        {p.activeBinId} ({p.binsToEdge >= 0 ? `${p.binsToEdge} from edge` : `${-p.binsToEdge} bins outside`})
+      <div className="faint" style={{ marginTop: 10, fontSize: 11 }}>
+        {p.managed ? fmtNum(p.managed.rebalanceCount) : "—"} rebalances ·{" "}
+        {p.managed?.lastRebalanceAt ? fmtAgo(p.managed.lastRebalanceAt) : "never"} · position {shortPk(p.positionPk)} ·
+        pool {shortPk(p.poolAddress)} · bins {p.lowerBinId}…{p.upperBinId} · active {p.activeBinId} (
+        {p.binsToEdge >= 0 ? `${p.binsToEdge} from edge` : `${-p.binsToEdge} bins outside`})
       </div>
     </div>
   );
@@ -332,10 +331,28 @@ function RangeBar({ p, defaultEdgeBufferBins }: { p: PositionView; defaultEdgeBu
             boxShadow: `0 0 8px ${p.inRange ? "rgba(56,225,255,.6)" : "rgba(248,113,113,.6)"}`,
           }}
         />
-        <span className="faint" style={{ position: "absolute", left: 8, top: 4, fontSize: 11 }}>
+        <span
+          style={{
+            position: "absolute",
+            left: 8,
+            top: 4,
+            fontSize: 11,
+            color: "#fff",
+            textShadow: "0 1px 2px rgba(0,0,0,0.9)",
+          }}
+        >
           {fmtPrice(p.minPrice)}
         </span>
-        <span className="faint" style={{ position: "absolute", right: 8, top: 4, fontSize: 11 }}>
+        <span
+          style={{
+            position: "absolute",
+            right: 8,
+            top: 4,
+            fontSize: 11,
+            color: "#fff",
+            textShadow: "0 1px 2px rgba(0,0,0,0.9)",
+          }}
+        >
           {fmtPrice(p.maxPrice)}
         </span>
       </div>
@@ -353,6 +370,59 @@ function Tile({ label, value, sub, cls }: { label: string; value: string; sub?: 
       <div className="label">{label}</div>
       <div className={`value ${cls ?? ""}`}>{value}</div>
       {sub && <div className="faint">{sub}</div>}
+    </div>
+  );
+}
+
+/**
+ * "Bins to trigger" is distance to the actual rebalance trigger (the edge-buffer
+ * zone), not the raw range edge — same `edgeBufferBins` fallback as RangeBar so
+ * the two stay consistent about what decides when a rebalance fires.
+ */
+function TimeInRangeTile({ p, defaultEdgeBufferBins }: { p: PositionView; defaultEdgeBufferBins: number | null }) {
+  const edgeBufferBins = p.managed?.edgeBufferBins ?? defaultEdgeBufferBins ?? Math.round(p.widthBins * 0.15);
+  const halfWidth = Math.max(1, Math.round(p.widthBins / 2));
+  const maxDistance = Math.max(1, halfWidth - edgeBufferBins);
+  const binsFromTrigger = Math.max(0, p.binsToEdge - edgeBufferBins);
+  const proximityPct = clamp((binsFromTrigger / maxDistance) * 100, 0, 100);
+  const barColor = !p.inRange ? "var(--bad)" : proximityPct <= 20 ? "var(--warn)" : "var(--good)";
+
+  return (
+    <div className="tile">
+      <div className="label">Time in range</div>
+      <div className="value">{p.managed?.timeInRangePct != null ? fmtPct(p.managed.timeInRangePct, 1) : "—"}</div>
+      <div className="faint">
+        {p.managed?.openedAt ? `opened ${fmtAgo(p.managed.openedAt)}` : p.managed ? "since managed" : "not managed"}
+      </div>
+      {p.managed && (
+        <>
+          <div
+            style={{
+              marginTop: 8,
+              height: 4,
+              borderRadius: 2,
+              background: "var(--border)",
+              position: "relative",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: `${proximityPct}%`,
+                background: barColor,
+                borderRadius: 2,
+              }}
+            />
+          </div>
+          <div className="faint" style={{ fontSize: 10, marginTop: 4 }}>
+            {p.inRange ? `${fmtNum(binsFromTrigger)} of ${fmtNum(maxDistance)} bins to trigger` : "out of range"}
+          </div>
+        </>
+      )}
     </div>
   );
 }
