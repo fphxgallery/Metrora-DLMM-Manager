@@ -32,6 +32,11 @@ export class TxError extends Error {
   }
 }
 
+/** How often an already-signed transaction is rebroadcast while awaiting confirmation. */
+const REBROADCAST_INTERVAL_MS = 2_000;
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /**
  * Builds, simulates, signs and confirms transactions.
  *
@@ -40,6 +45,9 @@ export class TxError extends Error {
  * program errors into a readable message before any fee is paid. A rebalance
  * that fails halfway is the expensive failure mode this app has, so failing at
  * simulation is always preferable.
+ *
+ * Confirmation REBROADCASTS rather than waiting passively — see
+ * confirmWithRebroadcast for why a single broadcast is not enough.
  */
 export class TxSender {
   constructor(
@@ -102,19 +110,12 @@ export class TxSender {
       return base;
     }
 
-    const signature = await this.connection.sendRawTransaction(tx.serialize(), {
-      skipPreflight: true, // already simulated above
-      maxRetries: 5,
-    });
-    this.log.info({ label, signature }, "transaction sent");
-
-    const conf = await this.connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      "confirmed",
+    const signature = await this.confirmWithRebroadcast(
+      tx.serialize(), // already simulated above
+      label,
+      sim.value.logs ?? undefined,
+      async () => (await this.connection.getBlockHeight("confirmed")) > lastValidBlockHeight,
     );
-    if (conf.value.err) {
-      throw new TxError(`${label} failed on chain: ${JSON.stringify(conf.value.err)}`, sim.value.logs ?? undefined);
-    }
 
     const feeLamports = await this.feeOf(signature);
     this.log.info({ label, signature, feeLamports }, "transaction confirmed");
@@ -151,20 +152,17 @@ export class TxSender {
       return base;
     }
 
-    const signature = await this.connection.sendRawTransaction(tx.serialize(), {
-      skipPreflight: true,
-      maxRetries: 5,
-    });
-    this.log.info({ label, signature }, "transaction sent");
-
-    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash("confirmed");
-    const conf = await this.connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      "confirmed",
+    // Expiry is judged against the transaction's OWN blockhash — Jupiter set it
+    // when it built the message. The previous code fetched a fresh blockhash
+    // *after* sending and confirmed against that, which measured the lifetime of
+    // an unrelated blockhash rather than this transaction's.
+    const txBlockhash = tx.message.recentBlockhash;
+    const signature = await this.confirmWithRebroadcast(
+      tx.serialize(),
+      label,
+      sim.value.logs ?? undefined,
+      async () => !(await this.connection.isBlockhashValid(txBlockhash, { commitment: "confirmed" })).value,
     );
-    if (conf.value.err) {
-      throw new TxError(`${label} failed on chain: ${JSON.stringify(conf.value.err)}`, sim.value.logs ?? undefined);
-    }
 
     const feeLamports = await this.feeOf(signature);
     this.log.info({ label, signature, feeLamports }, "transaction confirmed");
@@ -174,6 +172,68 @@ export class TxSender {
   async sendInstructions(ixs: TransactionInstruction[], signers: Keypair[], label: string): Promise<SendResult> {
     const tx = new Transaction().add(...ixs);
     return this.send(tx, signers, label);
+  }
+
+  /**
+   * Broadcasts a signed transaction and waits for it, resending the SAME bytes
+   * every couple of seconds until it confirms or its blockhash dies.
+   *
+   * `sendRawTransaction` + `confirmTransaction` broadcasts exactly once and then
+   * waits. If that one broadcast is dropped — RPC ingest throttling, a leader
+   * transition — nothing ever retries it, and the full ~60s validity window
+   * burns down to "block height exceeded" for a transaction that was never
+   * actually delivered. That is not a rare edge: it stranded a path-B deposit
+   * leg three times on live funds, twice with the priority fee an order of
+   * magnitude above the going rate, which rules out fee starvation as the cause.
+   *
+   * Rebroadcasting is safe because the bytes are already signed: the signature
+   * is fixed, so a duplicate that arrives after inclusion is simply discarded by
+   * the network. It cannot double-execute.
+   */
+  private async confirmWithRebroadcast(
+    raw: Uint8Array,
+    label: string,
+    simLogs: string[] | undefined,
+    expired: () => Promise<boolean>,
+  ): Promise<string> {
+    // maxRetries 0: this loop owns rebroadcasting, so the RPC should not also
+    // retry on its own schedule.
+    const opts = { skipPreflight: true, maxRetries: 0 };
+    const signature = await this.connection.sendRawTransaction(raw, opts);
+    this.log.info({ label, signature }, "transaction sent");
+
+    for (let attempt = 1; ; attempt++) {
+      const { value } = await this.connection.getSignatureStatus(signature);
+      if (value?.err) {
+        throw new TxError(`${label} failed on chain: ${JSON.stringify(value.err)}`, simLogs);
+      }
+      if (value?.confirmationStatus === "confirmed" || value?.confirmationStatus === "finalized") {
+        if (attempt > 1) this.log.info({ label, signature, attempt }, "confirmed after rebroadcast");
+        return signature;
+      }
+
+      if (await expired()) {
+        // Re-check with history before giving up: the block-height read is at
+        // `confirmed`, so a transaction that landed in the last slot or two can
+        // still be invisible above. Without this the caller would be told
+        // nothing landed while the funds had in fact moved.
+        const final = await this.connection.getSignatureStatus(signature, {
+          searchTransactionHistory: true,
+        });
+        if (final.value && !final.value.err) return signature;
+        if (final.value?.err) {
+          throw new TxError(`${label} failed on chain: ${JSON.stringify(final.value.err)}`, simLogs);
+        }
+        throw new Error(
+          `${label}: blockhash expired after ${attempt} broadcast attempts without ${signature} ` +
+            "being included. It can no longer land and no fee was paid — safe to retry.",
+        );
+      }
+
+      await delay(REBROADCAST_INTERVAL_MS);
+      // Same signed bytes, same signature — a no-op if it already landed.
+      await this.connection.sendRawTransaction(raw, opts).catch(() => undefined);
+    }
   }
 
   /** Actual fee paid, for the cost ledger. Best effort — never fails the send. */
