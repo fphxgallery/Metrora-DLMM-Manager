@@ -133,11 +133,28 @@ cp "${REPO_ROOT}/deploy/${SERVICE}.service" "/etc/systemd/system/${SERVICE}.serv
 systemctl daemon-reload
 systemctl enable "${SERVICE}"
 
-echo
-echo "Done. Next:"
-echo "  1. sudoedit ${APP_DIR}/.env   # set RPC_ENDPOINT; keep DRY_RUN=true to start"
-echo "     (API_TOKEN was auto-generated above — save it; optionally set TELEGRAM_* for alerts)"
-echo "  2. (live) place a keypair at the path in .env, owned by ${USER_NAME}, chmod 600"
-echo "     or: sudo -u ${USER_NAME} node ${APP_DIR}/dist/wallet/index.js create"
-echo "  3. sudo systemctl start ${SERVICE}"
-echo "  4. journalctl -u ${SERVICE} -f"
+# An UPGRADE of an already-running install: restart now so the new build takes
+# effect immediately — `systemctl start` on an active unit is a no-op and would
+# otherwise leave the old process serving the old code indefinitely, which is
+# silent and easy to miss (this is exactly what happened the first time this
+# script ran against a live instance).
+#
+# A FRESH install is left stopped: .env still has a placeholder RPC_ENDPOINT
+# until it's edited, so auto-starting here would just crash-loop.
+if systemctl is-active --quiet "${SERVICE}"; then
+  echo "==> ${SERVICE} is already running — restarting to pick up this build"
+  systemctl restart "${SERVICE}"
+  sleep 2
+  systemctl --no-pager status "${SERVICE}" | head -5
+  echo
+  echo "Done. Restarted. journalctl -u ${SERVICE} -f to watch it."
+else
+  echo
+  echo "Done. Next:"
+  echo "  1. sudoedit ${APP_DIR}/.env   # set RPC_ENDPOINT; keep DRY_RUN=true to start"
+  echo "     (API_TOKEN was auto-generated above — save it; optionally set TELEGRAM_* for alerts)"
+  echo "  2. (live) place a keypair at the path in .env, owned by ${USER_NAME}, chmod 600"
+  echo "     or: sudo -u ${USER_NAME} node ${APP_DIR}/dist/wallet/index.js create"
+  echo "  3. sudo systemctl start ${SERVICE}"
+  echo "  4. journalctl -u ${SERVICE} -f"
+fi
