@@ -71,3 +71,77 @@ test("throws only when expiry is confirmed by history too", async () => {
     return true;
   });
 });
+
+// ---------------------------------------------------------------- CU limit ----
+//
+// The priority fee is price x limit, but scheduling priority comes from the
+// per-CU price alone, so an oversized limit is pure waste. Cutting too close,
+// though, fails on chain with "exceeded compute units" -- and unlike an expired
+// blockhash, that fee IS charged. These pin the conservatism.
+
+const { Transaction, ComputeBudgetProgram, Keypair, PublicKey } = await import("@solana/web3.js");
+
+const txWithLimit = (units) =>
+  new Transaction().add(
+    ComputeBudgetProgram.setComputeUnitLimit({ units }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200000 }),
+  );
+const limitOf = (tx) => {
+  const ix = tx.instructions.find(
+    (i) => i.programId.equals(ComputeBudgetProgram.programId) && i.data[0] === 2,
+  );
+  return ix ? ix.data.readUInt32LE(1) : null;
+};
+const sender = () => new TxSender(cfg, {}, log, () => false);
+
+test("retightens the SDK's 1.4M fallback limit down to real usage", () => {
+  const tx = txWithLimit(1_400_000);
+  const units = sender().retightenComputeLimit(tx, 250_000);
+
+  assert.equal(units, Math.ceil(250_000 * 1.5) + 20_000);
+  assert.equal(limitOf(tx), units, "instruction was actually replaced");
+  assert.ok(units > 250_000, "keeps headroom above simulated usage");
+  assert.ok(units < 1_400_000 / 3, "and is a large saving");
+});
+
+test("leaves a proportionate limit alone", () => {
+  const tx = txWithLimit(600_000);
+  assert.equal(sender().retightenComputeLimit(tx, 400_000), null, "1.5x is not disproportionate");
+  assert.equal(limitOf(tx), 600_000, "untouched");
+});
+
+test("never raises a limit", () => {
+  // Ratio trips (10x) but the safety floor alone would exceed the current limit.
+  const tx = txWithLimit(10_000);
+  const units = sender().retightenComputeLimit(tx, 1_000);
+  assert.equal(units, 10_000, "clamped to the existing limit");
+  assert.equal(limitOf(tx), 10_000);
+});
+
+test("does nothing without a limit instruction or a usage figure", () => {
+  const bare = new Transaction().add(
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200000 }),
+  );
+  assert.equal(sender().retightenComputeLimit(bare, 250_000), null, "no limit ix to replace");
+  assert.equal(sender().retightenComputeLimit(txWithLimit(1_400_000), undefined), null);
+  assert.equal(sender().retightenComputeLimit(txWithLimit(1_400_000), 0), null);
+});
+
+// Replacing an instruction invalidates the signature. If re-signing did not
+// work, every retightened transaction would be rejected as malformed.
+test("the transaction is still signable and serialisable after retightening", () => {
+  const payer = Keypair.generate();
+  const tx = txWithLimit(1_400_000);
+  tx.recentBlockhash = new PublicKey(Keypair.generate().publicKey).toBase58();
+  tx.feePayer = payer.publicKey;
+  tx.sign(payer);
+  const before = tx.serialize().length;
+
+  assert.ok(sender().retightenComputeLimit(tx, 250_000) !== null);
+  tx.sign(payer); // what send() does after retightening
+
+  const after = tx.serialize();
+  assert.ok(after.length > 0);
+  assert.equal(after.length, before, "same shape, just a different limit value");
+  assert.equal(limitOf(tx), Math.ceil(250_000 * 1.5) + 20_000);
+});

@@ -35,6 +35,16 @@ export class TxError extends Error {
 /** How often an already-signed transaction is rebroadcast while awaiting confirmation. */
 const REBROADCAST_INTERVAL_MS = 2_000;
 
+/**
+ * Only retighten a compute-unit limit that exceeds simulated usage by more than
+ * this. Well above any plausible simulate-vs-execute drift, so ordinary
+ * transactions are left alone entirely.
+ */
+const CU_RETIGHTEN_RATIO = 3;
+/** Headroom kept when retightening: half again the simulated usage, plus a floor. */
+const CU_SAFETY_MULTIPLIER = 1.5;
+const CU_SAFETY_FLOOR = 20_000;
+
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -110,6 +120,17 @@ export class TxSender {
       return base;
     }
 
+    const tightened = this.retightenComputeLimit(tx, sim.value.unitsConsumed ?? undefined);
+    if (tightened !== null) {
+      // Changing an instruction invalidates the signature; sign() rebuilds it
+      // from scratch. The blockhash is untouched, so its window is unaffected.
+      tx.sign(...signers);
+      this.log.info(
+        { label, unitsConsumed: sim.value.unitsConsumed, computeUnitLimit: tightened },
+        "compute limit retightened",
+      );
+    }
+
     const signature = await this.confirmWithRebroadcast(
       tx.serialize(), // already simulated above
       label,
@@ -172,6 +193,40 @@ export class TxSender {
   async sendInstructions(ixs: TransactionInstruction[], signers: Keypair[], label: string): Promise<SendResult> {
     const tx = new Transaction().add(...ixs);
     return this.send(tx, signers, label);
+  }
+
+  /**
+   * Shrinks a wildly oversized compute-unit limit to what the transaction
+   * actually used. Returns the new limit, or null if it was left alone.
+   *
+   * The priority fee is price x limit, but scheduling priority comes from the
+   * per-CU PRICE alone — so an inflated limit buys nothing and is pure waste.
+   * The Meteora SDK sets its own limit, and when its internal CU estimation
+   * fails it falls back to a near-max 1,400,000. That estimation simulates the
+   * bare rebalance instruction WITHOUT the ATA-creation instructions this app
+   * prepends, so on a position whose wSOL ATA has been closed it fails every
+   * time and the fallback is what ships: ~280,000 lamports of priority fee where
+   * the real usage implies nearer 120,000.
+   *
+   * Deliberately conservative. Cutting too close fails on chain with "exceeded
+   * compute units", and unlike an expired blockhash that fee IS charged — so
+   * this only fires on limits that are disproportionate by a wide margin, and
+   * leaves 50% headroom plus a floor when it does.
+   */
+  private retightenComputeLimit(tx: Transaction, unitsConsumed: number | undefined): number | null {
+    if (!unitsConsumed || unitsConsumed <= 0) return null;
+
+    const idx = tx.instructions.findIndex(
+      (ix) => ix.programId.equals(ComputeBudgetProgram.programId) && ix.data[0] === 2,
+    );
+    if (idx < 0) return null;
+
+    const current = tx.instructions[idx].data.readUInt32LE(1);
+    if (current <= unitsConsumed * CU_RETIGHTEN_RATIO) return null;
+
+    const units = Math.min(current, Math.ceil(unitsConsumed * CU_SAFETY_MULTIPLIER) + CU_SAFETY_FLOOR);
+    tx.instructions[idx] = ComputeBudgetProgram.setComputeUnitLimit({ units });
+    return units;
   }
 
   /**

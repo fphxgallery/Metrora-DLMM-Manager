@@ -4,7 +4,7 @@ import type { Config, StrategyTypeName } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { Store } from "../state.js";
 import type { MeteoraClient } from "./client.js";
-import type { TxSender, SendResult } from "../tx/send.js";
+import { TxError, type TxSender, type SendResult } from "../tx/send.js";
 import { DEFAULT_BIN_PER_POSITION, StrategyType, type DlmmPool } from "./sdk.js";
 import { priceOfBin, rangeAround, toRaw, toUi } from "./pricing.js";
 
@@ -130,15 +130,22 @@ export async function openPosition(deps: ActionDeps, params: OpenParams): Promis
         // The position exists but holds nothing — say so explicitly, with the
         // pubkey, so it isn't just a dangling rent-paying account nobody knows
         // about. The existing /add endpoint can retry the deposit as-is.
+        const detail = e instanceof Error ? e.message : String(e);
         log.error(
-          { positionPk, err: e instanceof Error ? e.message : String(e) },
+          { positionPk, err: detail },
           "position created but deposit failed — retry via POST /api/positions/:pk/add",
         );
-        throw new Error(
-          `position ${positionPk} was created but the deposit failed: ` +
-            `${e instanceof Error ? e.message : String(e)}. Retry the deposit with ` +
-            `POST /api/positions/${positionPk}/add — the position itself is fine, just empty.`,
-        );
+        const message =
+          `position ${positionPk} was created but the deposit failed: ${detail}. ` +
+          `Retry the deposit with POST /api/positions/${positionPk}/add — ` +
+          "the position itself is fine, just empty.";
+        // Stay a TxError when the cause was one, or the program logs are lost:
+        // run() in routes/positions.ts only attaches `logs` for `instanceof
+        // TxError`, and this is precisely where the Curve rounding "insufficient
+        // funds" failure lands — the logs are the only place its real reason
+        // appears. Re-wrapping in a plain Error is what made those failures
+        // undiagnosable from the dashboard.
+        throw e instanceof TxError ? new TxError(message, e.logs) : new Error(message);
       }
     } else {
       // DRY-RUN: only the create+extend leg can be simulated. The deposit
