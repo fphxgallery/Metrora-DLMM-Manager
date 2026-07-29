@@ -23,6 +23,10 @@ export class Engine {
   private timer?: NodeJS.Timeout;
   private busy = new Set<string>();
   private ticking = false;
+  // Edge-triggered, not level-triggered: alert once on the way down, once on
+  // the way back up. Without this a wallet parked below the reserve would page
+  // every poll interval forever.
+  private lowBalanceAlerted = false;
 
   constructor(
     private readonly ctx: AppContext,
@@ -58,6 +62,11 @@ export class Engine {
     if (this.ticking) return;
     this.ticking = true;
     try {
+      // Independent of whether anything is managed — a wallet can be under
+      // the reserve before it ever holds a position, and this is the kind of
+      // thing worth a push rather than only showing up in LOGS.
+      await this.checkSolBalance();
+
       const positions = this.ctx.store.positions();
       if (positions.length === 0) return;
 
@@ -74,6 +83,30 @@ export class Engine {
       this.ctx.store.flush();
     } finally {
       this.ticking = false;
+    }
+  }
+
+  private async checkSolBalance(): Promise<void> {
+    const wallet = this.deps.client.wallet();
+    if (!wallet) return;
+
+    let bal: number;
+    try {
+      bal = await this.deps.client.solBalance();
+    } catch {
+      return; // a transient RPC hiccup isn't worth alerting over
+    }
+
+    const low = bal < this.ctx.cfg.minSolBalance;
+    if (low && !this.lowBalanceAlerted) {
+      this.lowBalanceAlerted = true;
+      this.notifier.notify(
+        `🪫 SOL balance ${bal.toFixed(4)} is below MIN_SOL_BALANCE ${this.ctx.cfg.minSolBalance} — ` +
+          "rebalances and other actions will be refused until it's funded",
+      );
+    } else if (!low && this.lowBalanceAlerted) {
+      this.lowBalanceAlerted = false;
+      this.notifier.notify(`🔋 SOL balance recovered: ${bal.toFixed(4)}`);
     }
   }
 

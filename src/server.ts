@@ -347,6 +347,9 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       const kp = keypairFromMnemonic(mnemonic);
       saveKeypairFile(cfg.keypairPath, kp, Boolean(force));
       log.warn({ publicKey: kp.publicKey.toBase58() }, "new wallet created from the dashboard");
+      notifier.notify(
+        `🔑 New wallet created from the dashboard — ${kp.publicKey.toBase58()}` + (force ? " (overwrote the previous key)" : ""),
+      );
       return { ok: true, publicKey: kp.publicKey.toBase58(), mnemonic };
     } catch (e) {
       return reply.code(400).send({ error: msg(e) });
@@ -365,6 +368,9 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       const kp = keypairFromUnknown(secret, Number(account ?? 0));
       saveKeypairFile(cfg.keypairPath, kp, Boolean(force));
       log.warn({ publicKey: kp.publicKey.toBase58() }, "wallet imported from the dashboard");
+      notifier.notify(
+        `🔑 Wallet imported from the dashboard — ${kp.publicKey.toBase58()}` + (force ? " (overwrote the previous key)" : ""),
+      );
       return { ok: true, publicKey: kp.publicKey.toBase58() };
     } catch (e) {
       return reply.code(400).send({ error: msg(e) });

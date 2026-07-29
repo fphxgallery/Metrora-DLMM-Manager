@@ -67,17 +67,41 @@ async function main(): Promise<void> {
 
   // Finish anything an earlier process was interrupted mid-way through, BEFORE
   // the engine starts polling — otherwise a fresh trigger could fire against a
-  // position whose funds are still sitting in the wallet.
+  // position whose funds are still sitting in the wallet. Silent when there was
+  // nothing to resume (the normal case on every boot but the first after a crash).
+  const pendingAtBoot = store.pendingJournal().length;
+  if (pendingAtBoot > 0) {
+    notifier.notify(`⏳ Resuming ${pendingAtBoot} unfinished rebalance(s) from a previous run`);
+  }
   try {
     await resumeJournal(rebalanceDeps);
   } catch (e) {
     log.error({ err: e instanceof Error ? e.message : String(e) }, "journal resume threw");
   }
+  if (pendingAtBoot > 0) {
+    const stillPending = store.pendingJournal().length;
+    if (stillPending > 0) {
+      notifier.notify(
+        `⚠️ ${stillPending} rebalance(s) still unresolved after resume — check LOGS/METRICS, funds may be sitting in the wallet`,
+      );
+    } else {
+      notifier.notify(`✅ Resumed and completed ${pendingAtBoot} unfinished rebalance(s)`);
+    }
+  }
 
   engine.start();
+  notifier.notify(
+    `▶️ DLMM Manager started — ${isDryRun(ctx) ? "DRY-RUN" : "LIVE"} on ${cfg.cluster}` +
+      `, ${store.positions().length} managed position(s)` +
+      (isAutoRebalance(ctx) ? "" : " (auto-rebalance OFF)"),
+  );
 
   const shutdown = async (sig: string) => {
     log.info({ sig }, "shutting down");
+    // Awaited, not the usual fire-and-forget notify() — process.exit() right
+    // after would kill the Telegram request mid-flight otherwise, and this is
+    // the one alert most worth actually receiving (an unexpected restart).
+    await notifier.send(`⏹️ DLMM Manager stopping (${sig})`);
     engine.stop();
     store.flush();
     await server.close();
