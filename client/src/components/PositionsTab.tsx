@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api.ts";
+import { api, type Settings } from "../api.ts";
 import { fmtAgo, fmtAmount, fmtNum, fmtPct, fmtPrice, fmtUsd, shortPk } from "../format.ts";
 
 export interface PositionView {
@@ -50,6 +50,10 @@ export function PositionsTab() {
   const [data, setData] = useState<PositionsResponse | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Fallback for positions with no per-position override — mirrors the
+  // engine's own `managed.edgeBufferBins ?? cfg.edgeBufferBins` fallback, so
+  // the range bar's zones match what actually decides when a rebalance fires.
+  const [defaultEdgeBufferBins, setDefaultEdgeBufferBins] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -68,6 +72,15 @@ export function PositionsTab() {
     const id = setInterval(load, 30_000);
     return () => clearInterval(id);
   }, [load]);
+
+  useEffect(() => {
+    api
+      .get<Settings>("/api/settings")
+      .then((s) => setDefaultEdgeBufferBins(Number(s.config.EDGE_BUFFER_BINS)))
+      .catch(() => {
+        /* the range bar just falls back to a fixed zone width */
+      });
+  }, []);
 
   if (!data && !error) return <div className="panel faint">loading…</div>;
 
@@ -96,13 +109,21 @@ export function PositionsTab() {
       )}
 
       {data?.positions.map((p) => (
-        <PositionCard key={p.positionPk} p={p} onChanged={load} />
+        <PositionCard key={p.positionPk} p={p} onChanged={load} defaultEdgeBufferBins={defaultEdgeBufferBins} />
       ))}
     </>
   );
 }
 
-function PositionCard({ p, onChanged }: { p: PositionView; onChanged: () => void }) {
+function PositionCard({
+  p,
+  onChanged,
+  defaultEdgeBufferBins,
+}: {
+  p: PositionView;
+  onChanged: () => void;
+  defaultEdgeBufferBins: number | null;
+}) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [logs, setLogs] = useState<string[] | null>(null);
@@ -207,7 +228,7 @@ function PositionCard({ p, onChanged }: { p: PositionView; onChanged: () => void
         </pre>
       )}
 
-      <RangeBar p={p} />
+      <RangeBar p={p} defaultEdgeBufferBins={defaultEdgeBufferBins} />
 
       <div className="tiles" style={{ marginTop: 12 }}>
         <Tile label="Value" value={fmtUsd(p.valueUsd)} sub={`${fmtAmount(p.amountX)} ${p.tokenX.symbol} · ${fmtAmount(p.amountY)} ${p.tokenY.symbol}`} />
@@ -240,23 +261,66 @@ function PositionCard({ p, onChanged }: { p: PositionView; onChanged: () => void
 }
 
 /**
- * Where the active price sits inside the position's range. Out-of-range is shown
- * by pinning the marker to the edge it left and coloring it — the single most
- * important thing to see at a glance, because an out-of-range position earns nothing.
+ * Where the active price sits inside the position's range, colored by how close
+ * it is to triggering a rebalance rather than just in-range/out — a continuous
+ * green-to-red gradient whose transition points are the position's ACTUAL
+ * `edgeBufferBins` zone (dashed lines), not an arbitrary safe/risky split. Out
+ * of range is still the single loudest signal: the marker itself turns red and
+ * pins to the edge it left, since an out-of-range position earns nothing.
  */
-function RangeBar({ p }: { p: PositionView }) {
+function RangeBar({ p, defaultEdgeBufferBins }: { p: PositionView; defaultEdgeBufferBins: number | null }) {
   const pct = Math.max(0, Math.min(100, p.pctThroughRange));
+  const edgeBufferBins = p.managed?.edgeBufferBins ?? defaultEdgeBufferBins ?? Math.round(p.widthBins * 0.15);
+
+  // Zone boundary as a % of the track: where EDGE_BUFFER_BINS actually starts.
+  // Clamped so a degenerate config (buffer >= half the width) can't collapse
+  // the gradient into nonsense.
+  const zonePct = p.widthBins > 0 ? clamp((edgeBufferBins / p.widthBins) * 100, 2, 40) : 15;
+  // The gradient fades from amber to green over the same width as the zone
+  // itself, so the color reads as a continuous "how close to the edge" scale
+  // rather than a hard flip at the boundary.
+  const fadePct = Math.min(zonePct * 2, 50);
+
+  const gradient =
+    `linear-gradient(90deg, var(--bad) 0%, var(--warn) ${zonePct}%, var(--good) ${fadePct}%, ` +
+    `var(--good) ${100 - fadePct}%, var(--warn) ${100 - zonePct}%, var(--bad) 100%)`;
+
   return (
     <div style={{ marginTop: 12 }}>
       <div
         style={{
           position: "relative",
           height: 26,
-          background: "var(--panel-2)",
-          border: "1px solid var(--border)",
           borderRadius: 4,
+          overflow: "hidden",
+          border: "1px solid var(--border)",
+          background: gradient,
         }}
       >
+        {/* Scrim so the price labels and marker stay legible over the gradient. */}
+        <div style={{ position: "absolute", inset: 0, background: "rgba(17,23,31,0.62)" }} />
+
+        <div
+          style={{
+            position: "absolute",
+            left: `${zonePct}%`,
+            top: 0,
+            bottom: 0,
+            width: 0,
+            borderLeft: "1px dashed rgba(251,191,36,0.5)",
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            right: `${zonePct}%`,
+            top: 0,
+            bottom: 0,
+            width: 0,
+            borderLeft: "1px dashed rgba(251,191,36,0.5)",
+          }}
+        />
+
         <div
           style={{
             position: "absolute",
@@ -277,6 +341,10 @@ function RangeBar({ p }: { p: PositionView }) {
       </div>
     </div>
   );
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
 }
 
 function Tile({ label, value, sub, cls }: { label: string; value: string; sub?: string; cls?: string }) {
