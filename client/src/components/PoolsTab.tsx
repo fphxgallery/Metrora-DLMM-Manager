@@ -41,6 +41,8 @@ export interface PoolDetail {
   isBlacklisted: boolean;
   tokenX: { mint: string; symbol: string; decimals: number; priceUsd: number };
   tokenY: { mint: string; symbol: string; decimals: number; priceUsd: number };
+  /** null when no wallet is configured. */
+  walletBalances: { x: number; y: number } | null;
   suggestedRange: { minBinId: number; maxBinId: number; rangeBins: number; minPrice: number; maxPrice: number };
   bins: Bin[];
 }

@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api.ts";
-import { fmtNum, fmtPrice, shortPk } from "../format.ts";
+import { fmtAmount, fmtNum, fmtPrice, fmtUsd, shortPk } from "../format.ts";
 import type { PoolDetail } from "./PoolsTab.tsx";
 
 interface OpenResult {
@@ -12,11 +12,28 @@ interface OpenResult {
   results: { dryRun: boolean; signature?: string; unitsConsumed?: number }[];
 }
 
-const STRATEGIES = [
-  { value: "Spot", hint: "even across the range — the default" },
-  { value: "Curve", hint: "concentrated near the active price" },
-  { value: "BidAsk", hint: "weighted to the range edges" },
-];
+const STRATEGIES = ["Spot", "Curve", "BidAsk"] as const;
+
+/**
+ * Splits the wallet's balances into an equal-USD-value deposit: whichever side
+ * is worth less caps the fill, and an equal value is taken from the other side
+ * — the excess on the larger side is left untouched, not drained.
+ *
+ * (Not `totalValue / 2` from each side's own balance — that identity forces
+ * BOTH sides to their full balance the moment the wallet is imbalanced, since
+ * totalValue is defined as the sum of both balances in the first place.)
+ */
+function autoFillAmounts(
+  balX: number,
+  balY: number,
+  priceX: number,
+  priceY: number,
+): { x: number; y: number } {
+  if (!(priceX > 0) || !(priceY > 0)) return { x: 0, y: 0 };
+  const perSideUsd = Math.min(balX * priceX, balY * priceY);
+  if (!(perSideUsd > 0)) return { x: 0, y: 0 };
+  return { x: perSideUsd / priceX, y: perSideUsd / priceY };
+}
 
 /**
  * Opens a position in the inspected pool. The range is expressed as a half-width
@@ -26,8 +43,9 @@ const STRATEGIES = [
 export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpened: () => void }) {
   const [xAmount, setXAmount] = useState("0");
   const [yAmount, setYAmount] = useState("0");
+  const [autoFill, setAutoFill] = useState(false);
   const [rangeBins, setRangeBins] = useState(String(pool.suggestedRange.rangeBins));
-  const [strategyType, setStrategyType] = useState("Spot");
+  const [strategyType, setStrategyType] = useState<(typeof STRATEGIES)[number]>("Spot");
   const [auto, setAuto] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -39,6 +57,25 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
   const maxBin = pool.activeBinId + (Number.isFinite(bins) ? bins : 0);
   // binStep is in basis points per bin, so each bin is 1.0001^… ≈ (1 + step/10000).
   const priceAt = (bin: number) => pool.activePrice * Math.pow(1 + pool.binStep / 10_000, bin - pool.activeBinId);
+
+  function applyAutoFill(balances: { x: number; y: number }) {
+    const { x, y } = autoFillAmounts(balances.x, balances.y, pool.tokenX.priceUsd, pool.tokenY.priceUsd);
+    setXAmount(x ? x.toFixed(pool.tokenX.decimals) : "0");
+    setYAmount(y ? y.toFixed(pool.tokenY.decimals) : "0");
+  }
+
+  function toggleAutoFill(next: boolean) {
+    setAutoFill(next);
+    if (next && pool.walletBalances) applyAutoFill(pool.walletBalances);
+  }
+
+  // Re-fill when the pool's balances refresh (e.g. after this form's own
+  // submit) as long as the toggle is still on — otherwise it would silently
+  // go stale the moment a deposit changed the wallet.
+  useEffect(() => {
+    if (autoFill && pool.walletBalances) applyAutoFill(pool.walletBalances);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pool.walletBalances?.x, pool.walletBalances?.y]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -68,16 +105,46 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
 
   return (
     <form className="panel" onSubmit={submit}>
-      <h2>Open a position — {pool.name}</h2>
+      <div className="row" style={{ justifyContent: "space-between", marginBottom: 4 }}>
+        <h2 style={{ margin: 0 }}>Open a position — {pool.name}</h2>
+        <label className="row" style={{ gap: 8, cursor: pool.walletBalances ? "pointer" : "not-allowed" }}>
+          <span className="faint">Auto-Fill</span>
+          <span className="switch">
+            <input
+              type="checkbox"
+              checked={autoFill}
+              disabled={!pool.walletBalances}
+              onChange={(e) => toggleAutoFill(e.target.checked)}
+            />
+            <span className="track" />
+          </span>
+        </label>
+      </div>
 
       <div className="grid-2">
         <label className="field">
           <span>{pool.tokenX.symbol} amount</span>
-          <input value={xAmount} onChange={(e) => setXAmount(e.target.value)} inputMode="decimal" />
+          <input
+            value={xAmount}
+            onChange={(e) => {
+              setAutoFill(false);
+              setXAmount(e.target.value);
+            }}
+            inputMode="decimal"
+          />
+          <BalanceHint amount={pool.walletBalances?.x} symbol={pool.tokenX.symbol} priceUsd={pool.tokenX.priceUsd} />
         </label>
         <label className="field">
           <span>{pool.tokenY.symbol} amount</span>
-          <input value={yAmount} onChange={(e) => setYAmount(e.target.value)} inputMode="decimal" />
+          <input
+            value={yAmount}
+            onChange={(e) => {
+              setAutoFill(false);
+              setYAmount(e.target.value);
+            }}
+            inputMode="decimal"
+          />
+          <BalanceHint amount={pool.walletBalances?.y} symbol={pool.tokenY.symbol} priceUsd={pool.tokenY.priceUsd} />
         </label>
         <label className="field">
           <span>Range (± bins)</span>
@@ -85,13 +152,18 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
         </label>
         <label className="field">
           <span>Strategy</span>
-          <select value={strategyType} onChange={(e) => setStrategyType(e.target.value)}>
+          <div className="segmented">
             {STRATEGIES.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.value} — {s.hint}
-              </option>
+              <button
+                key={s}
+                type="button"
+                className={strategyType === s ? "active" : ""}
+                onClick={() => setStrategyType(s)}
+              >
+                {s}
+              </button>
             ))}
-          </select>
+          </div>
         </label>
       </div>
 
@@ -125,5 +197,21 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
         {busy ? "…" : "OPEN POSITION"}
       </button>
     </form>
+  );
+}
+
+function BalanceHint({ amount, symbol, priceUsd }: { amount?: number; symbol: string; priceUsd: number }) {
+  if (amount == null) {
+    return (
+      <span className="faint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
+        no wallet configured
+      </span>
+    );
+  }
+  return (
+    <span className="faint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
+      balance {fmtAmount(amount)} {symbol}
+      {priceUsd > 0 ? ` (${fmtUsd(amount * priceUsd)})` : ""}
+    </span>
   );
 }

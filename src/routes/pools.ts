@@ -84,6 +84,21 @@ export function registerPoolRoutes(app: FastifyInstance, ctx: AppContext): void 
       const totalFeePct = Number(pool.getDynamicFee());
       const baseFeePct = Number(feeInfo.baseFeeRatePercentage);
 
+      // Best-effort: a wallet-read failure must not break the pool page, since
+      // the chart and range data are useful even with no wallet configured.
+      let walletBalances: { x: number; y: number } | null = null;
+      if (client.wallet()) {
+        try {
+          const [balXRaw, balYRaw] = await Promise.all([
+            client.tokenBalance(pool.tokenX.publicKey, pool.tokenX.owner),
+            client.tokenBalance(pool.tokenY.publicKey, pool.tokenY.owner),
+          ]);
+          walletBalances = { x: toUi(balXRaw, decimalsX), y: toUi(balYRaw, decimalsY) };
+        } catch (e) {
+          log.debug({ address, err: msg(e) }, "wallet balance lookup failed");
+        }
+      }
+
       return {
         address,
         name: meta?.name ?? address.slice(0, 8),
@@ -112,6 +127,7 @@ export function registerPoolRoutes(app: FastifyInstance, ctx: AppContext): void 
           decimals: decimalsY,
           priceUsd: priceUsdY,
         },
+        walletBalances,
         suggestedRange: {
           ...suggested,
           rangeBins: cfg.rangeBins,

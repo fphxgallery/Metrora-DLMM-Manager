@@ -361,3 +361,87 @@ th.sortable:hover {
   color: var(--text-faint);
   flex: 0 0 auto;
 }
+
+/* ---------- toggle switch ---------- */
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch .track {
+  position: absolute;
+  inset: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border-hot);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.switch .track::before {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 2px;
+  top: 2px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  transition:
+    transform 0.15s,
+    background 0.15s;
+}
+
+.switch input:checked + .track {
+  border-color: var(--accent-dim);
+}
+
+.switch input:checked + .track::before {
+  transform: translateX(16px);
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(56, 225, 255, 0.6);
+}
+
+/* ---------- segmented control ---------- */
+
+.segmented {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.segmented button {
+  flex: 1;
+  background: var(--bg);
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.segmented button:last-child {
+  border-right: none;
+}
+
+.segmented button.active {
+  background: var(--panel-2);
+  color: var(--accent);
+}
+
+.segmented button:hover:not(.active) {
+  color: var(--text);
+}
