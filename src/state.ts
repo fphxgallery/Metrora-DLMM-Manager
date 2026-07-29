@@ -212,9 +212,24 @@ export class Store {
 
   openJournal(entry: JournalEntry): JournalEntry {
     this.data.journal.push(entry);
-    if (this.data.journal.length > MAX_JOURNAL_ENTRIES) this.data.journal.shift();
+    if (this.data.journal.length > MAX_JOURNAL_ENTRIES) this.evictOldestTerminal();
     this.save();
     return entry;
+  }
+
+  /**
+   * Drops the oldest entry that has REACHED a terminal phase, never a pending one.
+   *
+   * A blind shift() off the head was a fund-stranding bug: an entry stuck in
+   * `pending` is the only record that funds are sitting in the wallet instead of
+   * the pool, and at ~16 rebalances an hour this buffer wraps inside a day, so a
+   * stuck entry at the head got deleted along with the evidence — resumeJournal
+   * would never see it again. If every entry is pending we keep them all and let
+   * the buffer grow; unbounded history is cheap next to unrecoverable funds.
+   */
+  private evictOldestTerminal(): void {
+    const i = this.data.journal.findIndex((j) => j.phase === "done" || j.phase === "failed");
+    if (i >= 0) this.data.journal.splice(i, 1);
   }
 
   journalEntry(id: string): JournalEntry | undefined {

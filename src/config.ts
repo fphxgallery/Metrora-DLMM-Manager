@@ -95,7 +95,11 @@ export function loadConfig(): Config {
     rpcEndpoint: str("RPC_ENDPOINT"),
     cluster,
     keypairPath: str("KEYPAIR_PATH", "./secrets/keypair.json"),
-    priorityFeeMicroLamports: num("PRIORITY_FEE_MICROLAMPORTS", 200_000),
+    // Measured against getRecentPrioritizationFees on mainnet: 141 of 150 recent
+    // blocks paid ZERO, and the non-zero samples clustered near 500. 50k is still
+    // far above market, and only safe to keep this low because sendVersioned
+    // rebroadcasts until the blockhash expires rather than broadcasting once.
+    priorityFeeMicroLamports: num("PRIORITY_FEE_MICROLAMPORTS", 50_000),
     computeUnitLimit: num("COMPUTE_UNIT_LIMIT", 600_000),
     minSolBalance: num("MIN_SOL_BALANCE", 0.05),
 
@@ -116,7 +120,12 @@ export function loadConfig(): Config {
     // lopsided position before paying for one.
     ratioToleranceBps: num("RATIO_TOLERANCE_BPS", 3000),
     maxActiveBinSlippage: num("MAX_ACTIVE_BIN_SLIPPAGE", 15),
-    swapSlippageBps: num("SWAP_SLIPPAGE_BPS", 0),
+    // NOT 0. Zero hands the decision to Jupiter's dynamic slippage, whose maxBps
+    // is a CEILING rather than a floor — it classed SOL/USDC as low-volatility and
+    // chose 15bps every time, killing roughly one swap in five on error 6001 while
+    // quoted price impact was 0-1bps. The failures came from price moving between
+    // quote and landing, not from impact. 50 is Meteora's own fixed swap default.
+    swapSlippageBps: num("SWAP_SLIPPAGE_BPS", 50),
     // ~0.015 SOL. Generous next to observed swap fees of 16k-75k lamports, and
     // still small enough that a congestion spike cannot quietly eat a position.
     maxSwapPriorityLamports: num("MAX_SWAP_PRIORITY_LAMPORTS", 200_000),
