@@ -2,14 +2,30 @@ import { useEffect, useState } from "react";
 import { api, type Settings, type WalletInfo } from "../api.ts";
 
 const NUMERIC_FIELDS: { key: string; label: string; hint: string }[] = [
-  { key: "RANGE_BINS", label: "Range bins (half-width)", hint: "New positions span [active-N, active+N]." },
-  { key: "EDGE_BUFFER_BINS", label: "Edge buffer bins", hint: "Rebalance once the active bin is this close to an edge. Must be < range bins." },
+  {
+    key: "RANGE_BINS",
+    label: "Range bins (half-width)",
+    hint: "New positions span [active-N, active+N]. A bin COUNT, not a price width — a bin is the pool's bin step, so 60 is ±2.4% at bin step 4 but ±61% at bin step 80. Applies to new positions only.",
+  },
+  {
+    key: "EDGE_BUFFER_BINS",
+    label: "Edge buffer bins",
+    hint: "Rebalance once the active bin is this close to an edge. Must be < range bins; ~20% of it is a reasonable start.",
+  },
   { key: "COOLDOWN_MIN", label: "Cooldown (min)", hint: "Minimum minutes between rebalances of the same position." },
   { key: "MIN_FEE_COVER_RATIO", label: "Min fee cover ratio", hint: "Skip unless accrued fees cover this multiple of the estimated cost." },
-  { key: "RATIO_TOLERANCE_BPS", label: "Ratio tolerance (bps)", hint: "Token-ratio drift that justifies adding a swap leg." },
+  {
+    key: "RATIO_TOLERANCE_BPS",
+    label: "Ratio tolerance (bps)",
+    hint: "Token-ratio drift from 50/50 that justifies adding a swap leg. The swap path costs ~30x the atomic one, so higher = cheaper but more one-sided.",
+  },
   { key: "MAX_SWAP_PCT_OF_POSITION", label: "Max swap % of position", hint: "Ceiling on how much value one rebalance may swap." },
   { key: "SWAP_SLIPPAGE_BPS", label: "Swap slippage (bps)", hint: "0 = let Jupiter pick (dynamic slippage)." },
-  { key: "MAX_ACTIVE_BIN_SLIPPAGE", label: "Max active-bin slippage", hint: "Bins the active bin may move between simulate and land." },
+  {
+    key: "MAX_ACTIVE_BIN_SLIPPAGE",
+    label: "Max active-bin slippage",
+    hint: "Bins the active bin may move between simulate and land. Bin-step-dependent too: 15 bins is 0.6% at bin step 4, 12% at bin step 80.",
+  },
   { key: "PRIORITY_FEE_MICROLAMPORTS", label: "Priority fee (µlamports/CU)", hint: "Raise if transactions fail to confirm under congestion." },
   { key: "COMPUTE_UNIT_LIMIT", label: "Compute unit limit", hint: "Bin-array init and rebalance are compute-heavy." },
   { key: "MIN_SOL_BALANCE", label: "Min SOL balance", hint: "Refuse to act below this, so fees and rent stay payable." },

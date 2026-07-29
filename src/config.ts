@@ -88,18 +88,22 @@ export function loadConfig(): Config {
     dataApiUrl: str("DATA_API_URL", "https://dlmm.datapi.meteora.ag"),
     dataApiCacheMs: num("DATA_API_CACHE_MS", 10_000),
 
-    rangeBins: num("RANGE_BINS", 20),
+    // Defaults are tuned for a bin-step-4 major pair (SOL-USDC): ±60 bins is
+    // ±2.4%, which covers that pair's ~3% median daily range. See DEFAULTS_NOTE.
+    rangeBins: num("RANGE_BINS", 60),
     strategyType,
 
     autoRebalance: bool("AUTO_REBALANCE", false),
     pollIntervalMs: num("POLL_INTERVAL_MS", 30_000),
-    edgeBufferBins: num("EDGE_BUFFER_BINS", 2),
-    cooldownMin: num("COOLDOWN_MIN", 15),
+    edgeBufferBins: num("EDGE_BUFFER_BINS", 12),
+    cooldownMin: num("COOLDOWN_MIN", 60),
     minFeeCoverRatio: num("MIN_FEE_COVER_RATIO", 1.5),
-    ratioToleranceBps: num("RATIO_TOLERANCE_BPS", 1500),
-    maxActiveBinSlippage: num("MAX_ACTIVE_BIN_SLIPPAGE", 5),
+    // The swap leg costs roughly 30x an atomic rebalance, so tolerate a fairly
+    // lopsided position before paying for one.
+    ratioToleranceBps: num("RATIO_TOLERANCE_BPS", 3000),
+    maxActiveBinSlippage: num("MAX_ACTIVE_BIN_SLIPPAGE", 15),
     swapSlippageBps: num("SWAP_SLIPPAGE_BPS", 0),
-    maxSwapPctOfPosition: num("MAX_SWAP_PCT_OF_POSITION", 60),
+    maxSwapPctOfPosition: num("MAX_SWAP_PCT_OF_POSITION", 50),
 
     dryRun: bool("DRY_RUN", true),
 
@@ -168,3 +172,26 @@ function validate(cfg: Config): void {
  * the active bin always fits one account.
  */
 export const MAX_RANGE_BINS = 690;
+
+/**
+ * DEFAULTS_NOTE — why the shipped numbers are what they are, and when they lie.
+ *
+ * `RANGE_BINS` and `EDGE_BUFFER_BINS` are bin COUNTS, but a bin's size is set by
+ * the pool's bin step, so the same count is a completely different price band
+ * from one pool to the next:
+ *
+ *     price band ≈ ±((1 + binStep/10000)^RANGE_BINS − 1)
+ *
+ *     binStep   1 → ±60 bins = ±0.6%
+ *     binStep   4 → ±60 bins = ±2.4%   <- what these defaults assume
+ *     binStep  20 → ±60 bins = ±12.7%
+ *     binStep  80 → ±60 bins = ±61%
+ *
+ * The defaults target a bin-step-4 major pair, whose median daily high-low is
+ * around 3%. On a wide-bin-step pool they produce an absurdly large range, and
+ * on a bin-step-1 pool an unusably tight one — set RANGE_BINS per pool from the
+ * price band you actually want. The pool detail view prints the resulting band.
+ *
+ * `MAX_ACTIVE_BIN_SLIPPAGE` is the same trap in miniature: 15 bins is 0.6% at
+ * bin step 4, but 12% at bin step 80.
+ */

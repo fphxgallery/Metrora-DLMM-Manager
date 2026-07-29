@@ -90,15 +90,15 @@ value before it is written (a bad value is rejected, never persisted).
 | `RPC_ENDPOINT` | — | **Required.** A real RPC endpoint |
 | `DRY_RUN` | `true` | Build and simulate every transaction, send nothing |
 | `AUTO_REBALANCE` | `false` | Master switch; positions also opt in individually |
-| `RANGE_BINS` | `20` | New positions span `[active − N, active + N]` |
+| `RANGE_BINS` | `60` | New positions span `[active − N, active + N]`. **A bin count, not a price width** — see below |
 | `STRATEGY_TYPE` | `Spot` | `Spot`, `Curve` or `BidAsk` |
-| `EDGE_BUFFER_BINS` | `2` | Rebalance once the active bin is this close to an edge. Must be `< RANGE_BINS` |
-| `COOLDOWN_MIN` | `15` | Minimum minutes between rebalances of one position — the main anti-churn knob |
+| `EDGE_BUFFER_BINS` | `12` | Rebalance once the active bin is this close to an edge. Must be `< RANGE_BINS` |
+| `COOLDOWN_MIN` | `60` | Minimum minutes between rebalances of one position — the main anti-churn knob |
 | `MIN_FEE_COVER_RATIO` | `1.5` | Required ratio of projected benefit to estimated cost |
-| `RATIO_TOLERANCE_BPS` | `1500` | Token-ratio drift from 50/50 that justifies a swap leg |
-| `MAX_SWAP_PCT_OF_POSITION` | `60` | Ceiling on how much value one rebalance may swap |
+| `RATIO_TOLERANCE_BPS` | `3000` | Token-ratio drift from 50/50 that justifies a swap leg |
+| `MAX_SWAP_PCT_OF_POSITION` | `50` | Ceiling on how much value one rebalance may swap |
 | `SWAP_SLIPPAGE_BPS` | `0` | `0` = Jupiter dynamic slippage |
-| `MAX_ACTIVE_BIN_SLIPPAGE` | `5` | Bins the active bin may move between simulation and landing |
+| `MAX_ACTIVE_BIN_SLIPPAGE` | `15` | Bins the active bin may move between simulation and landing |
 | `PRIORITY_FEE_MICROLAMPORTS` | `200000` | Raise if transactions fail to confirm |
 | `MIN_SOL_BALANCE` | `0.05` | Refuse to act below this, so fees and rent stay payable |
 | `API_TOKEN` | unset | Bearer token for every mutating endpoint and the login gate |
@@ -106,6 +106,41 @@ value before it is written (a bad value is rejected, never persisted).
 
 `DRY_RUN` and `AUTO_REBALANCE` can also be toggled from the UI; those overrides live in
 `data/state.json` so they survive a container rebuild.
+
+### Sizing the range — read this before setting `RANGE_BINS`
+
+`RANGE_BINS` is a **bin count**, and a bin's size is set by the *pool's* bin step:
+
+```
+price band ≈ ±((1 + binStep/10000)^RANGE_BINS − 1)
+```
+
+| Pool bin step | `RANGE_BINS=60` gives |
+|---|---|
+| 1 | ±0.6% |
+| 4 | ±2.4% |
+| 10 | ±6.2% |
+| 20 | ±12.7% |
+| 80 | ±61% |
+
+The shipped defaults target a **bin-step-4 major pair** such as SOL-USDC, whose median daily
+high-low is around 3%, so ±2.4% goes out of range roughly daily rather than hourly. On a wide
+bin-step pool the same number produces an absurd range; on a bin-step-1 pool, an unusable one.
+Pick the count from the price band you want — the pool detail view prints the band the current
+value produces. `MAX_ACTIVE_BIN_SLIPPAGE` has the same dependency.
+
+Two more things the defaults assume, both worth checking against your own pool:
+
+- **The swap path costs roughly 30× the atomic path** (three transactions plus swap slippage,
+  versus one instruction whose fee is a rounding error). `RATIO_TOLERANCE_BPS=3000` is set high
+  deliberately, to stay on the cheap path unless the position is badly one-sided.
+- **The cost guard uses the pool-wide fee rate**, which understates what a concentrated position
+  earns while in range. That makes it conservative by design — but it also means small positions
+  (roughly under $3–5k on a major pair) will see swap-leg rebalances refused as not worth the cost,
+  and will sit one-sided until price returns.
+
+`RANGE_BINS` only applies to **new** positions; a rebalance re-centres at the position's existing
+width. To widen a position you already hold, exit and reopen it.
 
 ## Wallet
 
