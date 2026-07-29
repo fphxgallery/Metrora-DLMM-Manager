@@ -32,7 +32,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   const text = await res.text();
-  const body = text ? (JSON.parse(text) as unknown) : {};
+
+  let body: unknown = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as unknown;
+    } catch {
+      // Not JSON at all — a reverse-proxy 502 page, an HTML error, or the SPA
+      // fallback serving index.html. Letting the SyntaxError escape would show
+      // "Unexpected token < in JSON" and bury the status that actually explains
+      // it, so report what really came back instead.
+      const snippet = text.replace(/\s+/g, " ").trim().slice(0, 200);
+      throw new ApiError(
+        `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""} — server sent a non-JSON response: ${snippet}`,
+        res.status,
+      );
+    }
+  }
+
   if (!res.ok) {
     const b = body as { error?: string; logs?: string[] };
     throw new ApiError(b.error ?? `HTTP ${res.status}`, res.status, b.logs);

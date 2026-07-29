@@ -8,3 +8,4 @@ secrets/
 .env.bak*
 *.log
 .DS_Store
+*.tsbuildinfo

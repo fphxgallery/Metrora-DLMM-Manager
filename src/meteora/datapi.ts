@@ -82,6 +82,9 @@ export interface PositionPnL {
 
 export interface PositionPnLResponse {
   positions: PositionPnL[];
+  /** True when more pages of this wallet's positions remain in this pool. */
+  hasNext?: boolean;
+  totalCount?: number;
   [k: string]: unknown;
 }
 
@@ -95,6 +98,11 @@ export interface PositionPnLResponse {
  */
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+/** Cache entries kept before the oldest is dropped. */
+const MAX_CACHE_ENTRIES = 200;
+/** Stop paging PnL here, so a bad `hasNext` can never loop forever. */
+const MAX_PNL_PAGES = 10;
 
 interface CacheEntry {
   at: number;
@@ -138,7 +146,18 @@ export class DataApi {
         throw new Error(`data api ${res.status} for ${path}: ${body.slice(0, 200)}`);
       }
       const json = (await res.json()) as T;
+      // delete-then-set so the key moves to the end: Map preserves insertion
+      // order, and re-setting in place would leave a hot path looking like the
+      // oldest entry and get it evicted first.
+      this.cache.delete(path);
       this.cache.set(path, { at: Date.now(), value: json });
+      // Keyed on the full path, including arbitrary pool-search query strings,
+      // so this grows without bound in a long-running process otherwise.
+      while (this.cache.size > MAX_CACHE_ENTRIES) {
+        const oldest = this.cache.keys().next().value;
+        if (oldest === undefined) break;
+        this.cache.delete(oldest);
+      }
       return json;
     })();
 
@@ -187,12 +206,24 @@ export class DataApi {
    * missing entry as "no PnL data yet", not as "no position".
    */
   async positionPnl(poolAddress: string, user: string): Promise<PositionPnL[]> {
-    const qs = new URLSearchParams({ user, page_size: "100" });
-    const res = await this.fetchJson<PositionPnLResponse>(
-      `/positions/${poolAddress}/pnl?${qs}`,
-      this.cfg.dataApiCacheMs,
-    );
-    return Array.isArray(res.positions) ? res.positions : [];
+    const out: PositionPnL[] = [];
+    // Pages rather than taking the first 100: a wallet with more positions than
+    // that in one pool would silently lose the rest, and the caller reads a
+    // missing entry as "not indexed yet" — indistinguishable from truncation.
+    for (let page = 1; page <= MAX_PNL_PAGES; page++) {
+      const qs = new URLSearchParams({ user, page: String(page), page_size: "100" });
+      const res = await this.fetchJson<PositionPnLResponse>(
+        `/positions/${poolAddress}/pnl?${qs}`,
+        this.cfg.dataApiCacheMs,
+      );
+      const batch = Array.isArray(res.positions) ? res.positions : [];
+      out.push(...batch);
+      if (!res.hasNext || batch.length === 0) break;
+      if (page === MAX_PNL_PAGES) {
+        this.log.warn({ poolAddress, fetched: out.length }, "pnl paging hit its cap — results truncated");
+      }
+    }
+    return out;
   }
 
   /**

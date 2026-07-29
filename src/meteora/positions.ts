@@ -1,5 +1,4 @@
 import BN from "bn.js";
-import { PublicKey } from "@solana/web3.js";
 import type { Config } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { ManagedPosition, Store } from "../state.js";
@@ -55,7 +54,6 @@ export interface PositionView {
     pnlUsd: number;
     pnlPctChange: number;
     allTimeFeesUsd: number;
-    createdAt?: number | null;
   } | null;
 }
 
@@ -119,42 +117,6 @@ export async function listPositions(deps: {
   // Out-of-range first: those are the ones earning nothing and needing action.
   views.sort((a, b) => Number(a.inRange) - Number(b.inRange) || b.valueUsd - a.valueUsd);
   return views;
-}
-
-/** Reads one position by pubkey. Needs its pool address (positions are per-pool). */
-export async function getPositionView(
-  deps: { cfg: Config; client: MeteoraClient; dataApi: DataApi; store: Store; log: Logger },
-  poolAddress: string,
-  positionPk: string,
-): Promise<PositionView | null> {
-  const { client, dataApi, store, log } = deps;
-  const kp = client.wallet();
-  if (!kp) return null;
-
-  const pool = await client.getPool(poolAddress, { fresh: true });
-  let data: PositionData;
-  try {
-    data = (await pool.getPosition(new PublicKey(positionPk))).positionData;
-  } catch (e) {
-    log.debug({ positionPk, err: String(e) }, "position not found on chain");
-    return null;
-  }
-
-  const [meta, pnls] = await Promise.all([
-    dataApi.pool(poolAddress).catch(() => null),
-    dataApi.positionPnlSafe(poolAddress, kp.publicKey.toBase58()),
-  ]);
-
-  return buildView({
-    poolAddress,
-    pool,
-    meta,
-    pnl: pnls.find((x) => x.positionAddress === positionPk) ?? null,
-    positionPk,
-    data,
-    activeBinId: pool.lbPair.activeId,
-    managed: store.position(positionPk) ?? null,
-  });
 }
 
 function buildView(args: {
@@ -250,7 +212,6 @@ function buildView(args: {
           pnlUsd: Number(pnl.pnlUsd),
           pnlPctChange: Number(pnl.pnlPctChange),
           allTimeFeesUsd: Number(pnl.allTimeFees?.total?.usd ?? 0),
-          createdAt: pnl.createdAt,
         }
       : null,
   };

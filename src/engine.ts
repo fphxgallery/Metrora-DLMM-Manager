@@ -111,7 +111,8 @@ export class Engine {
   }
 
   private async evaluateAndAct(managed: ManagedPosition): Promise<void> {
-    const decision = await this.evaluate(managed);
+    // The tick is the only caller that should contribute a poll sample.
+    const decision = await this.evaluate(managed, { recordPoll: true });
     if (!decision.act) {
       this.ctx.log.debug(
         { positionPk: managed.positionPk, reason: decision.reason, ...decision.detail },
@@ -143,8 +144,14 @@ export class Engine {
   /**
    * The trigger evaluation. Exposed separately so the manual "rebalance now"
    * button and the METRICS view can show exactly what the engine would decide.
+   *
+   * `recordPoll` is opt-IN because this is otherwise a read-only question, and
+   * `GET /plan` asks it on demand. With recording on by default, every look at
+   * the plan silently added a sample to the time-in-range metric — inflating a
+   * number whose whole purpose is to describe what the *engine* observed on its
+   * own schedule. A new caller should have to ask for the side effect.
    */
-  async evaluate(managed: ManagedPosition, opts: { ignoreGuards?: boolean } = {}): Promise<Decision> {
+  async evaluate(managed: ManagedPosition, opts: { recordPoll?: boolean } = {}): Promise<Decision> {
     const { cfg, client, store } = this.ctx;
 
     if (this.busy.has(managed.positionPk)) return { act: false, reason: "busy: rebalance already in flight" };
@@ -161,32 +168,26 @@ export class Engine {
 
     const activeBinId = pool.lbPair.activeId;
     const status = rangeStatus(activeBinId, positionData.lowerBinId, positionData.upperBinId);
-    store.recordPoll(managed.positionPk, status.inRange);
+    if (opts.recordPoll) store.recordPoll(managed.positionPk, status.inRange);
 
-    if (!opts.ignoreGuards) {
-      if (!isAutoRebalance(this.ctx)) return { act: false, reason: "auto-rebalance is off globally" };
-      if (!managed.auto) return { act: false, reason: "auto-rebalance is off for this position" };
+    if (!isAutoRebalance(this.ctx)) return { act: false, reason: "auto-rebalance is off globally" };
+    if (!managed.auto) return { act: false, reason: "auto-rebalance is off for this position" };
 
-      const cooldownMin = managed.cooldownMin ?? cfg.cooldownMin;
-      const sinceMin = managed.lastRebalanceAt ? (Date.now() - managed.lastRebalanceAt) / 60_000 : Infinity;
-      if (sinceMin < cooldownMin) {
-        return {
-          act: false,
-          reason: "cooldown",
-          detail: { sinceMin: round1(sinceMin), cooldownMin },
-        };
-      }
+    const cooldownMin = managed.cooldownMin ?? cfg.cooldownMin;
+    const sinceMin = managed.lastRebalanceAt ? (Date.now() - managed.lastRebalanceAt) / 60_000 : Infinity;
+    if (sinceMin < cooldownMin) {
+      return { act: false, reason: "cooldown", detail: { sinceMin: round1(sinceMin), cooldownMin } };
+    }
 
-      const edgeBuffer = managed.edgeBufferBins ?? cfg.edgeBufferBins;
-      const outOfRange = !status.inRange;
-      const nearEdge = status.binsToEdge <= edgeBuffer;
-      if (!outOfRange && !nearEdge) {
-        return {
-          act: false,
-          reason: "in range",
-          detail: { activeBinId, binsToEdge: status.binsToEdge, edgeBuffer },
-        };
-      }
+    const edgeBuffer = managed.edgeBufferBins ?? cfg.edgeBufferBins;
+    const outOfRange = !status.inRange;
+    const nearEdge = status.binsToEdge <= edgeBuffer;
+    if (!outOfRange && !nearEdge) {
+      return {
+        act: false,
+        reason: "in range",
+        detail: { activeBinId, binsToEdge: status.binsToEdge, edgeBuffer },
+      };
     }
 
     const plan = await planRebalance(this.deps, {
@@ -195,10 +196,8 @@ export class Engine {
       strategyType: managed.strategyType,
     });
 
-    if (!opts.ignoreGuards) {
-      const guard = await this.costGuard(managed, plan);
-      if (!guard.ok) return { act: false, reason: "cost guard", detail: guard.detail };
-    }
+    const guard = await this.costGuard(managed, plan);
+    if (!guard.ok) return { act: false, reason: "cost guard", detail: guard.detail };
 
     const reason = status.inRange
       ? `active bin ${status.binsToEdge} from the edge`

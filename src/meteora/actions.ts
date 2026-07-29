@@ -4,6 +4,7 @@ import type { Config, StrategyTypeName } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { Store } from "../state.js";
 import type { MeteoraClient } from "./client.js";
+import type { DataApi } from "./datapi.js";
 import { TxError, type TxSender, type SendResult } from "../tx/send.js";
 import { DEFAULT_BIN_PER_POSITION, StrategyType, type DlmmPool } from "./sdk.js";
 import { priceOfBin, rangeAround, toRaw, toUi } from "./pricing.js";
@@ -11,6 +12,7 @@ import { priceOfBin, rangeAround, toRaw, toUi } from "./pricing.js";
 export interface ActionDeps {
   cfg: Config;
   client: MeteoraClient;
+  dataApi: DataApi;
   sender: TxSender;
   store: Store;
   log: Logger;
@@ -57,7 +59,7 @@ export interface OpenResult {
  * create+extend the (empty) position, then deposit into it.
  */
 export async function openPosition(deps: ActionDeps, params: OpenParams): Promise<OpenResult> {
-  const { cfg, client, sender, store, log } = deps;
+  const { cfg, client, dataApi, sender, store, log } = deps;
   const wallet = client.requireWallet();
   await client.assertSolFunded();
 
@@ -164,9 +166,17 @@ export async function openPosition(deps: ActionDeps, params: OpenParams): Promis
   // for the two-tx path that's the deposit, not the create.
   const persisted = Boolean(results.at(-1)?.signature);
   if (persisted) {
+    const pairName = await dataApi
+      .pool(params.poolAddress)
+      .then((m) => m.name)
+      .catch(() => null);
     store.upsertPosition({
       positionPk,
       poolAddress: params.poolAddress,
+      // Cached so logs and Telegram alerts can say "SOL-USDC" instead of a
+      // pubkey slice. Best effort — a naming lookup must not fail an open that
+      // has already landed on chain.
+      pairName: pairName ?? undefined,
       auto: params.auto ?? false,
       rangeBins,
       // Only an EXPLICIT choice becomes a per-position override — unlike

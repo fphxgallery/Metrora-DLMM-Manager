@@ -38,7 +38,7 @@ export interface PositionView {
     openedAt: number;
     timeInRangePct: number | null;
   } | null;
-  pnl: { pnlUsd: number; pnlPctChange: number; allTimeFeesUsd: number; createdAt?: number | null } | null;
+  pnl: { pnlUsd: number; pnlPctChange: number; allTimeFeesUsd: number } | null;
 }
 
 export interface PositionsResponse {

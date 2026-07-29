@@ -9,7 +9,7 @@ import type { AppContext } from "../types.js";
 
 export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, rebalanceDeps: RebalanceDeps): void {
   const { cfg, client, dataApi, sender, store, log } = ctx;
-  const actions: ActionDeps = { cfg, client, sender, store, log };
+  const actions: ActionDeps = { cfg, client, dataApi, sender, store, log };
 
   app.get("/api/positions", async (_req, reply) => {
     try {
