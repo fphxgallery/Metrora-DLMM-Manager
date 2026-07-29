@@ -49,14 +49,28 @@ export class TxSender {
     private readonly dryRun: () => boolean,
   ) {}
 
-  /** Compute-budget instructions, unless the builder already added its own. */
+  /**
+   * Compute-budget instructions to prepend, filling in only what the builder
+   * didn't already set.
+   *
+   * Checked independently per instruction TYPE (byte 0 of the instruction data
+   * is the discriminator: 2 = SetComputeUnitLimit, 3 = SetComputeUnitPrice), not
+   * "any ComputeBudgetProgram instruction present". Some SDK-built transactions
+   * (e.g. `createExtendedEmptyPosition`, which sizes its own CU limit from the
+   * number of bins being extended) set a compute-unit LIMIT but never a
+   * priority-fee PRICE — treating that as "budget already handled" would send
+   * the transaction with zero priority fee and risk it never landing under
+   * congestion.
+   */
   private budgetIxs(tx: Transaction): TransactionInstruction[] {
-    const hasBudget = tx.instructions.some((ix) => ix.programId.equals(ComputeBudgetProgram.programId));
-    if (hasBudget) return [];
-    return [
-      ComputeBudgetProgram.setComputeUnitLimit({ units: this.cfg.computeUnitLimit }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.cfg.priorityFeeMicroLamports }),
-    ];
+    const has = (discriminator: number) =>
+      tx.instructions.some(
+        (ix) => ix.programId.equals(ComputeBudgetProgram.programId) && ix.data[0] === discriminator,
+      );
+    const out: TransactionInstruction[] = [];
+    if (!has(2)) out.push(ComputeBudgetProgram.setComputeUnitLimit({ units: this.cfg.computeUnitLimit }));
+    if (!has(3)) out.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.cfg.priorityFeeMicroLamports }));
+    return out;
   }
 
   async send(tx: Transaction, signers: Keypair[], label: string): Promise<SendResult> {

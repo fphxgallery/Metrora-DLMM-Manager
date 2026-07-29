@@ -23,6 +23,13 @@ export const DLMM = (sdk.default ?? (sdk as unknown as typeof DlmmSdk.default)) 
 export const StrategyType = sdk.StrategyType;
 export const LBCLMM_PROGRAM_IDS = sdk.LBCLMM_PROGRAM_IDS;
 export const POSITION_MAX_LENGTH = sdk.POSITION_MAX_LENGTH;
+/**
+ * Widest a position can be created at with a single `initializePosition` call.
+ * A position wider than this needs a base account at this width plus a chain
+ * of `increasePositionLength` extend instructions — see
+ * `createExtendedEmptyPosition` in openPosition() for why.
+ */
+export const DEFAULT_BIN_PER_POSITION = sdk.DEFAULT_BIN_PER_POSITION;
 export const BASIS_POINT_MAX = sdk.BASIS_POINT_MAX;
 export const BIN_ARRAY_FEE = sdk.BIN_ARRAY_FEE;
 export const POSITION_FEE = sdk.POSITION_FEE;
