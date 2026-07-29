@@ -59,6 +59,13 @@ export interface Config {
   swapSlippageBps: number;
   /** Hard ceiling on how much of a position's value one rebalance may swap. */
   maxSwapPctOfPosition: number;
+  /**
+   * Refuse the swap leg when Jupiter's quoted price impact exceeds this. A
+   * ceiling on how bad a route we are willing to take, distinct from
+   * SWAP_SLIPPAGE_BPS, which is how much movement we tolerate on a route we have
+   * already accepted. Mirrors the "Swap Price Impact" guard in Meteora's own UI.
+   */
+  maxSwapPriceImpactBps: number;
 
   // --- safety ---
   dryRun: boolean;
@@ -104,6 +111,8 @@ export function loadConfig(): Config {
     maxActiveBinSlippage: num("MAX_ACTIVE_BIN_SLIPPAGE", 15),
     swapSlippageBps: num("SWAP_SLIPPAGE_BPS", 0),
     maxSwapPctOfPosition: num("MAX_SWAP_PCT_OF_POSITION", 50),
+    // 200bps = 2%, the default in Meteora's own swap settings.
+    maxSwapPriceImpactBps: num("MAX_SWAP_PRICE_IMPACT_BPS", 200),
 
     dryRun: bool("DRY_RUN", true),
 
@@ -156,6 +165,9 @@ function validate(cfg: Config): void {
   }
   if (cfg.maxSwapPctOfPosition <= 0 || cfg.maxSwapPctOfPosition > 100) {
     throw new Error(`MAX_SWAP_PCT_OF_POSITION must be in (0,100] (got ${cfg.maxSwapPctOfPosition})`);
+  }
+  if (cfg.maxSwapPriceImpactBps <= 0 || cfg.maxSwapPriceImpactBps > 10_000) {
+    throw new Error(`MAX_SWAP_PRICE_IMPACT_BPS must be in (0,10000] (got ${cfg.maxSwapPriceImpactBps})`);
   }
   if (cfg.maxActiveBinSlippage < 0) {
     throw new Error(`MAX_ACTIVE_BIN_SLIPPAGE must be >= 0 (got ${cfg.maxActiveBinSlippage})`);

@@ -3,8 +3,17 @@ import type { ManagedPosition } from "./state.js";
 import type { Notifier } from "./notify.js";
 import type { AppContext } from "./types.js";
 import { isAutoRebalance, isDryRun } from "./types.js";
-import { executeRebalance, planRebalance, type RebalanceDeps, type RebalancePlan } from "./meteora/rebalance.js";
+import {
+  executeRebalance,
+  planRebalance,
+  resumeJournal,
+  type RebalanceDeps,
+  type RebalancePlan,
+} from "./meteora/rebalance.js";
 import { rangeStatus } from "./meteora/pricing.js";
+
+/** How stale a pending journal entry must be before a tick retries it. */
+const RESUME_RETRY_MS = 120_000;
 
 export type Decision =
   | { act: false; reason: string; detail?: Record<string, unknown> }
@@ -67,6 +76,25 @@ export class Engine {
       // thing worth a push rather than only showing up in LOGS.
       await this.checkSolBalance();
 
+      // Unfinished rebalances are settled BEFORE any new one is considered.
+      // resumeJournal used to run only at boot, so a swap that failed mid-run
+      // left its withdrawn funds in the wallet until someone restarted the
+      // service — and meanwhile the position, now missing that side, looked
+      // wildly unbalanced and kept triggering fresh path-B rebalances that
+      // bought back what was already sitting in the wallet. Skipped while
+      // anything is in flight, and rate-limited so a permanently stuck entry
+      // is retried periodically rather than every tick.
+      if (this.busy.size === 0 && this.ctx.store.pendingJournal().length > 0) {
+        try {
+          await resumeJournal(this.deps, { minAgeMs: RESUME_RETRY_MS });
+        } catch (e) {
+          this.ctx.log.error(
+            { err: e instanceof Error ? e.message : String(e) },
+            "journal resume from tick failed",
+          );
+        }
+      }
+
       const positions = this.ctx.store.positions();
       if (positions.length === 0) return;
 
@@ -122,6 +150,9 @@ export class Engine {
     }
 
     this.busy.add(managed.positionPk);
+    // Stamped before execution, so a rebalance that fails still starts a
+    // cooldown. recordRebalance only fires on success.
+    this.ctx.store.patchPosition(managed.positionPk, { lastAttemptAt: Date.now() });
     try {
       const outcome = await executeRebalance(this.deps, decision.plan);
       if (!outcome.dryRun) {
@@ -156,6 +187,19 @@ export class Engine {
 
     if (this.busy.has(managed.positionPk)) return { act: false, reason: "busy: rebalance already in flight" };
 
+    // An unresolved entry means some of this position's funds are sitting in the
+    // wallet. Rebalancing around them reads the resulting lopsidedness as real
+    // and tries to correct it by buying back what we already hold — the loop
+    // observed on 2026-07-29. Settle the entry first; the tick above does that.
+    const unfinished = store.pendingJournal().find((j) => j.positionPk === managed.positionPk);
+    if (unfinished) {
+      return {
+        act: false,
+        reason: "unfinished rebalance pending — resolving that first",
+        detail: { journalId: unfinished.id, phase: unfinished.phase },
+      };
+    }
+
     const pool = await client.getPool(managed.poolAddress);
     let positionData;
     try {
@@ -174,7 +218,8 @@ export class Engine {
     if (!managed.auto) return { act: false, reason: "auto-rebalance is off for this position" };
 
     const cooldownMin = managed.cooldownMin ?? cfg.cooldownMin;
-    const sinceMin = managed.lastRebalanceAt ? (Date.now() - managed.lastRebalanceAt) / 60_000 : Infinity;
+    const lastActivity = Math.max(managed.lastRebalanceAt ?? 0, managed.lastAttemptAt ?? 0);
+    const sinceMin = lastActivity > 0 ? (Date.now() - lastActivity) / 60_000 : Infinity;
     if (sinceMin < cooldownMin) {
       return { act: false, reason: "cooldown", detail: { sinceMin: round1(sinceMin), cooldownMin } };
     }

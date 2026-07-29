@@ -387,7 +387,7 @@ async function runSwapLeg(
   plan: RebalancePlan,
   amountIn: BN,
 ): Promise<{ result: SendResult; received: BN }> {
-  const { client, sender, swapper, store, log } = deps;
+  const { cfg, client, sender, swapper, store, log } = deps;
   const wallet = client.requireWallet();
   const pool = await client.getPool(plan.poolAddress);
   const toMint = new PublicKey(plan.swap!.toMint);
@@ -409,6 +409,20 @@ async function runSwapLeg(
     },
     "swap quoted",
   );
+
+  // Refuse a bad route before anything is signed, so this costs a quote and no
+  // fee. Distinct from slippage tolerance: that is movement we accept on a route
+  // already chosen, this is whether the route is worth taking at all. The
+  // withdrawn funds stay in the wallet and the entry is retried on a later tick,
+  // by which point impact may have recovered.
+  if (quote.priceImpactBps > cfg.maxSwapPriceImpactBps) {
+    throw new Error(
+      `swap price impact ${quote.priceImpactBps}bps exceeds MAX_SWAP_PRICE_IMPACT_BPS ` +
+        `(${cfg.maxSwapPriceImpactBps}bps) — refusing the ${plan.swap!.fromSymbol}->` +
+        `${plan.swap!.toSymbol} route. Nothing was sent; the withdrawn funds are in the wallet ` +
+        "and this rebalance is retried automatically.",
+    );
+  }
 
   const tx = await swapper.buildTransaction(quote, wallet);
   const result = await sender.sendVersioned(tx, `swap ${plan.swap!.fromSymbol}->${plan.swap!.toSymbol}`);
@@ -478,9 +492,17 @@ async function depositProceeds(
  * actually true. Without this, a crash between the withdraw and the deposit
  * strands the funds in the wallet with the position sitting half-empty.
  */
-export async function resumeJournal(deps: RebalanceDeps): Promise<void> {
+export async function resumeJournal(
+  deps: RebalanceDeps,
+  opts: { minAgeMs?: number } = {},
+): Promise<void> {
   const { store, client, log } = deps;
-  const pending = store.pendingJournal();
+  // Boot passes nothing and resumes everything at once. The engine tick passes an
+  // age so a permanently-stuck entry — a route whose price impact stays too high,
+  // say — is retried periodically rather than on every single tick.
+  const minAgeMs = opts.minAgeMs ?? 0;
+  const now = Date.now();
+  const pending = store.pendingJournal().filter((j) => now - j.updatedAt >= minAgeMs);
   if (pending.length === 0) return;
 
   log.warn({ count: pending.length }, "resuming unfinished rebalances");

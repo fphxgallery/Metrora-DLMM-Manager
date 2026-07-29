@@ -26,6 +26,13 @@ export interface ManagedPosition {
   cooldownMin?: number;
   openedAt: number;
   lastRebalanceAt?: number;
+  /**
+   * When a rebalance was last ATTEMPTED, success or not. The cooldown keys off
+   * this as well as lastRebalanceAt, which only advances on success — without it
+   * a failing rebalance retried every poll interval, and a failure is usually
+   * the moment you least want to hammer.
+   */
+  lastAttemptAt?: number;
   rebalanceCount: number;
   /** Poll samples used for the time-in-range metric. */
   pollsTotal: number;
