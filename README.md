@@ -175,7 +175,10 @@ Two more things the defaults assume, both worth checking against your own pool:
   then. Observed live on a `RANGE_BINS=34` / `EDGE_BUFFER_BINS=20` position: it triggered at ~14 bins
   off centre with a token ratio near 1400bps, so **every** rebalance took the swap path and none took
   the atomic one. If you are seeing no atomic rebalances in METRICS, lower `EDGE_BUFFER_BINS` so it
-  triggers later, closer to balanced.
+  triggers later, closer to balanced. One caveat on reading that: the atomic/swap split is a total
+  across every managed position, so METRICS shows it only while exactly one position is managed —
+  with two it would credit each line with the other's rebalances, and it is left off rather than
+  shown wrong.
 - **The cost guard uses the pool-wide fee rate**, which understates what a concentrated position
   earns while in range. That makes it conservative by design — but it also means small positions
   (roughly under $3–5k on a major pair) will see swap-leg rebalances refused as not worth the cost,
