@@ -138,6 +138,21 @@ a {
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 12px;
+  /* Column flow so a tile can push its trailing block to the floor. */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Pushes a tile's last block to the bottom, so the trailing lines of every tile
+   in a row share a baseline and their bars sit at the same height. Opt-in per
+   tile: labels and values stay put at the top and still read as a row.
+   Written as a child selector deliberately — a tail element may carry its own
+   class with a margin-top (.cmp does), and a bare .tile-tail would lose to it on
+   source order alone. padding-top keeps a gap in the tallest tile, where the auto
+   margin collapses to nothing. */
+.tile > .tile-tail {
+  margin-top: auto;
+  padding-top: 7px;
 }
 
 .group-label {

@@ -411,7 +411,7 @@ function FeeTvlTile({ rate, valueUsd }: { rate: PositionView["feeRate"]; valueUs
       <div className={`value ${isOwn && poolPctPer24h != null ? (ahead ? "good" : "warn") : ""}`}>
         {fmtPct(showing, 2)}
       </div>
-      <div className="cmp">
+      <div className="cmp tile-tail">
         <div className="cmp-track">
           <div className={`cmp-fill ${ahead ? "" : "low"}`} style={{ width: `${fillPct}%` }} />
           {poolPct != null && isOwn && <div className="cmp-pool" style={{ left: `${poolPct}%` }} />}
@@ -430,7 +430,7 @@ function Tile({ label, value, sub, cls }: { label: string; value: string; sub?: 
     <div className="tile">
       <div className="label">{label}</div>
       <div className={`value ${cls ?? ""}`}>{value}</div>
-      {sub && <div className="faint">{sub}</div>}
+      {sub && <div className="faint tile-tail">{sub}</div>}
     </div>
   );
 }
@@ -456,7 +456,7 @@ function TimeInRangeTile({ p, defaultEdgeBufferBins }: { p: PositionView; defaul
         {p.managed?.openedAt ? `opened ${fmtAgo(p.managed.openedAt)}` : p.managed ? "since managed" : "not managed"}
       </div>
       {p.managed && (
-        <>
+        <div className="tile-tail">
           <div
             style={{
               marginTop: 8,
@@ -482,7 +482,7 @@ function TimeInRangeTile({ p, defaultEdgeBufferBins }: { p: PositionView; defaul
           <div className="faint" style={{ fontSize: 10, marginTop: 4 }}>
             {p.inRange ? `${fmtNum(binsFromTrigger)} of ${fmtNum(maxDistance)} bins to trigger` : "out of range"}
           </div>
-        </>
+        </div>
       )}
     </div>
   );
