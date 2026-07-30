@@ -458,36 +458,43 @@ button.pill-btn[aria-pressed="true"] {
   margin-left: auto;
 }
 
-/* Fee income as a rate, under a position's Performance tiles. */
-.rate-row {
+/* Position rate against the pool's: the fill is this position, the tick is the
+   pool, so "am I ahead" is a glance rather than a division. */
+.cmp {
+  margin-top: 7px;
+}
+.cmp-track {
+  position: relative;
+  height: 4px;
+  background: #1a2330;
+  border-radius: 2px;
+}
+.cmp-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--good);
+  border-radius: 2px;
+}
+.cmp-fill.low {
+  background: var(--warn);
+}
+/* Deliberately taller than the track so it reads as a threshold, not a segment. */
+.cmp-pool {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--text-dim);
+}
+.cmp-labels {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid var(--border);
-  font-size: 10.5px;
-  color: var(--text-dim);
-}
-.rate-row b {
-  font-weight: 400;
-  color: var(--text);
-  font-size: 15px;
-}
-.rate-row b.good {
-  color: var(--good);
-}
-.rate-row b.warn {
-  color: var(--warn);
-}
-.rate-row span b:not(:first-child),
-.rate-row span:not(:first-child) b {
-  font-size: 11px;
-}
-.rate-row .spark {
-  margin-left: auto;
-  line-height: 0;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 9.5px;
+  color: var(--text-faint);
 }
 
 /* One managed position, on one line — a table row's worth of facts without the

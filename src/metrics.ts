@@ -69,43 +69,39 @@ export interface FeeRate {
   /** Hours the figure was actually measured over — a 6h reading is not a 24h one. */
   hours: number;
   /**
-   * `realized` is what this position genuinely earned over the sampled window.
-   * `since-open` is a lifetime average, used until there is enough history; it
-   * understates a position that has lately been in range, because it averages in
-   * every period the position sat outside it.
+   * A lifetime average: all-time fees over the position's whole life. Understates a
+   * position that has lately been in range, because it averages in every period the
+   * position sat outside it. Used only as a cross-check on the indexer's own rate.
    */
-  basis: "realized" | "since-open";
+  basis: "since-open";
 }
 
 /** Under a quarter of an hour of history, the rate is noise scaled by 96. */
 const MIN_RATE_HOURS = 0.25;
 
 /**
- * Fee rate from the sample log: what this position actually earned, annualised to
- * a 24h figure from however long was sampled.
+ * The indexer's own per-position 24h fee/TVL, parsed from its string form.
  *
- * Uses the CURRENT position value as the denominator rather than its value at each
- * sample, which is an approximation — the position's value moves with price. It is
- * the same approximation the pool-wide ratio makes, so the two stay comparable.
+ * Preferred over anything derived from the sample log. `allTimeFees` does not
+ * accrue continuously — measured on a live position, 20 of 23 fifteen-minute
+ * intervals moved by exactly zero while the position was in range the whole time,
+ * so a rate differenced from it reports when the indexer's number happened to jump
+ * rather than what the position earned. This field has no such problem, needs no
+ * history, and is the figure Meteora's own UI shows.
+ *
+ * Note it is the indexer's ESTIMATE of a 24h rate, not a measurement over 24 hours:
+ * an 8-hour-old position still reports one.
  */
-export function realizedFeeRate(
-  samples: { ts: number; feesUsd: number }[],
-  valueUsd: number,
-): FeeRate | null {
-  if (!(valueUsd > 0) || samples.length < 2) return null;
-  const first = samples[0];
-  const last = samples[samples.length - 1];
-  const hours = (last.ts - first.ts) / 3_600_000;
-  if (hours < MIN_RATE_HOURS) return null;
-  const earned = last.feesUsd - first.feesUsd;
-  // allTimeFees counts claimed fees too, so it only ever rises. A fall means the
-  // indexer disagreed with itself, and scaling a negative delta by 24/hours would
-  // report a confident negative yield.
-  if (earned < 0) return null;
-  return { pctPer24h: (earned / valueUsd) * (24 / hours) * 100, hours, basis: "realized" };
+export function positionFeeTvlPct(raw: string | number | null | undefined): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Number(raw);
+  // Every numeric field on this response is a string, so a non-numeric value means
+  // the shape changed rather than that the rate is zero.
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
 }
 
-/** Lifetime average, for a position with too little sampled history to measure. */
+/** Lifetime average, kept as an independent cross-check on the indexer's figure. */
 export function sinceOpenFeeRate(
   allTimeFeesUsd: number,
   valueUsd: number,
@@ -116,32 +112,6 @@ export function sinceOpenFeeRate(
   const hours = (now - openedAt) / 3_600_000;
   if (hours < MIN_RATE_HOURS) return null;
   return { pctPer24h: (allTimeFeesUsd / valueUsd) * (24 / hours) * 100, hours, basis: "since-open" };
-}
-
-/**
- * The rate over successive buckets, for a trend line.
- *
- * Each point is its own bucket's rate, not a running total — a cumulative curve
- * looks like a rate but is not one, and reading its height instead of its slope
- * gets the answer wrong. Buckets shorter than the sample interval would alternate
- * between one sample and none, so the caller picks the width.
- */
-export function feeRateSeries(
-  samples: { ts: number; feesUsd: number }[],
-  valueUsd: number,
-  bucketMs: number,
-): number[] {
-  if (!(valueUsd > 0) || samples.length < 2 || bucketMs <= 0) return [];
-  const out: number[] = [];
-  let anchor = samples[0];
-  for (const s of samples) {
-    const span = s.ts - anchor.ts;
-    if (span < bucketMs) continue;
-    const earned = Math.max(0, s.feesUsd - anchor.feesUsd);
-    out.push((earned / valueUsd) * (24 / (span / 3_600_000)) * 100);
-    anchor = s;
-  }
-  return out;
 }
 
 /** Total lamports a set of rebalances consumed: network + priority fees, plus sunk bin-array rent. */
