@@ -13,7 +13,8 @@ spending more on rebalancing than the position can earn.
 - Open / add / claim / exit positions from the browser
 - Automatic rebalancing with cooldown, edge-buffer and cost guards
 - Hot wallet created or imported in the UI (or from a CLI)
-- Crash-safe: a rebalance interrupted mid-sequence resumes at the next start
+- Cost-vs-fees charts over 24h / 7d / 30d / 90d, so "does this pay?" has an answer
+- Crash-safe: a rebalance interrupted mid-sequence is resolved in-run, not at the next restart
 
 ## Quick start
 
@@ -71,10 +72,17 @@ mid-instruction, so this runs in three transactions:
 3. **deposit** — the proceeds go back into the (already re-centred) range.
 
 Between those steps the funds sit in the wallet. Every step is written to a journal in
-`data/state.json` **before** it is sent, so a crash leaves a record of exactly where it stopped. At
-the next start the app re-reads on-chain and wallet state and finishes the job — it never assumes a
-transaction landed just because it was journalled. Unfinished entries are shown at the top of the
-**METRICS** tab.
+`data/state.json` **before** it is sent, so an interruption leaves a record of exactly where it
+stopped. The app re-reads on-chain and wallet state and finishes the job — it never assumes a
+transaction landed just because it was journalled, and it treats recorded signatures as the evidence
+rather than inferring from the position's range.
+
+Resume runs **at boot and on every poll**, not only at startup. This matters more than it sounds: a
+swap that failed mid-run used to leave the withdrawn funds in the wallet until someone restarted the
+service, and meanwhile the position — now missing one side — read as wildly unbalanced and kept
+triggering fresh path-B rebalances that bought back what was already sitting in the wallet. A position
+with an unresolved journal entry is now ineligible for a new rebalance. Unfinished entries are shown
+at the top of the **METRICS** tab.
 
 > One SDK behaviour worth knowing: the balanced strategy splits `floor(width/2)` bins per side and
 > gives the spare bin to the bid side, so an **even-width** position comes back one bin wider on its
@@ -97,15 +105,34 @@ value before it is written (a bad value is rejected, never persisted).
 | `MIN_FEE_COVER_RATIO` | `1.5` | Required ratio of projected benefit to estimated cost |
 | `RATIO_TOLERANCE_BPS` | `3000` | Token-ratio drift from 50/50 that justifies a swap leg |
 | `MAX_SWAP_PCT_OF_POSITION` | `50` | Ceiling on how much value one rebalance may swap |
-| `SWAP_SLIPPAGE_BPS` | `0` | `0` = Jupiter dynamic slippage |
+| `SWAP_SLIPPAGE_BPS` | `50` | Swap slippage tolerance. `0` hands the choice to Jupiter's dynamic slippage — **don't**, see below |
+| `MAX_SWAP_PRICE_IMPACT_BPS` | `200` | Abort the swap leg above this quoted impact; the funds stay in the wallet and the entry retries later |
+| `MAX_SWAP_PRIORITY_LAMPORTS` | `200000` | Hard lamport ceiling on the priority fee Jupiter may attach to a swap |
 | `MAX_ACTIVE_BIN_SLIPPAGE` | `15` | Bins the active bin may move between simulation and landing |
-| `PRIORITY_FEE_MICROLAMPORTS` | `200000` | Raise if transactions fail to confirm |
+| `PRIORITY_FEE_MICROLAMPORTS` | `50000` | Per-CU price for transactions *we* build. Raise if transactions fail to confirm |
+| `SAMPLE_INTERVAL_MIN` | `15` | How often PnL is recorded for the METRICS charts |
+| `SAMPLE_RETENTION_DAYS` | `90` | How much sample history to keep |
 | `MIN_SOL_BALANCE` | `0.05` | Refuse to act below this, so fees and rent stay payable |
 | `API_TOKEN` | unset | Bearer token for every mutating endpoint and the login gate |
 | `ENABLE_WALLET_UI` | `false` | Allow creating/importing a key from the browser (needs `API_TOKEN`) |
 
 `DRY_RUN` and `AUTO_REBALANCE` can also be toggled from the UI; those overrides live in
 `data/state.json` so they survive a container rebuild.
+
+### Two defaults that were measured, not guessed
+
+**`SWAP_SLIPPAGE_BPS=0` is a trap on a low-volatility pair.** Zero delegates the decision to Jupiter's
+dynamic slippage, whose `maxBps` is a *ceiling and not a floor* — on SOL/USDC it chose 15bps every
+time, and roughly one swap in five then failed with error 6001 while the quoted price impact was
+0–1bps. The failures came from price moving between quote and landing, not from impact. `50` is the
+fixed default Meteora's own swap UI uses. Setting `0` deliberately is still supported.
+
+**`PRIORITY_FEE_MICROLAMPORTS` does not need to be large.** Sampled with
+`getRecentPrioritizationFees`, 141 of 150 recent blocks paid **zero** and the non-zero samples
+clustered near 500. `50000` is already far above market. It is only safe this low because sends are
+rebroadcast every 2s until the blockhash expires rather than broadcast once and passively awaited.
+Note it does not reach the swap leg at all — Jupiter builds and signs that transaction, so
+`MAX_SWAP_PRIORITY_LAMPORTS` is the only control there.
 
 ### Sizing the range — read this before setting `RANGE_BINS`
 
@@ -141,6 +168,36 @@ Two more things the defaults assume, both worth checking against your own pool:
 
 `RANGE_BINS` only applies to **new** positions; a rebalance re-centres at the position's existing
 width. To widen a position you already hold, exit and reopen it.
+
+## Does the automation pay?
+
+The **METRICS** tab charts cumulative fees earned against cumulative rebalance cost over 24h, 7d, 30d
+or 90d. Where the two cross is the moment the automation stopped costing money and started making it.
+
+Cost is drawn as a **step**, because it only moves when a rebalance lands — a smooth line would imply
+continuous spending and hide that the spend is lumpy. Ticks under the axis mark each rebalance, so a
+cluster of ticks against a flat fee line is the churn signal. PnL including price movement gets its
+own chart rather than a second axis: impermanent loss dwarfs fee income, and a shared scale would make
+the fee signal invisible.
+
+Rent is counted in cost. The rent a rebalance pays is for **bin arrays**, which are pool-owned, shared
+between every LP in the pool, and have no close instruction — that lamport never comes back. Position
+*account* rent, which is refunded when you close, is not counted here.
+
+### History has to be collected
+
+Meteora's Data API reports only what a position is worth *now* — there is no historical endpoint. So
+fees and PnL are sampled by this app every `SAMPLE_INTERVAL_MIN` minutes into an append-only
+`data/samples.jsonl`, and **a window that was never sampled can never be backfilled**. On a fresh
+install the 24h chart fills within a day, 7d within a week, and the longer views stay explicitly empty
+until that much history exists rather than drawing a line through data that isn't there.
+
+The cost curve is the exception: every rebalance record already carries its own timestamp, so cost is
+exact right back to the first rebalance even on a fresh install.
+
+One accounting rule worth knowing: cost and fee income are always drawn from the **same set of
+positions**. Fee income can only be read for positions still managed, so spending on closed positions
+is reported separately instead of being charged against a current position's earnings.
 
 ## Wallet
 
@@ -204,3 +261,9 @@ The client is built with `npm install`, not `npm ci` — a lockfile generated on
    claimed the fees.
 4. To exercise the resume path: kill the process after the withdraw leg of a path-B rebalance
    confirms, then restart and confirm it resumes at `swap`/`deposit` instead of stranding the funds.
+
+If you want to look at the UI without pointing it at a funded wallet, give it a scratch `DATA_DIR`, a
+`KEYPAIR_PATH` that does not exist, and `AUTO_REBALANCE=false` — with no key nothing can be signed.
+Note that `dotenv` reads `./.env` from the working directory regardless of `ENV_FILE`, so export the
+values you want to override explicitly. Never run a second instance against a wallet a deployed
+instance is already managing: both would rebalance the same position.
