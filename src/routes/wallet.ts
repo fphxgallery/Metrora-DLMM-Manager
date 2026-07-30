@@ -100,6 +100,22 @@ export function registerWalletTokenRoutes(app: FastifyInstance, ctx: AppContext)
 
     try {
       const [raw, inUse] = await Promise.all([readTokenAccounts(client.connection, owner), inUseMints(ctx)]);
+
+      /**
+       * The in-use guard is a hard block, so it may not run on a partial set of
+       * mints. When a pool read failed we cannot say which mints are in use, and
+       * therefore cannot safely classify ANY account — an empty account of a
+       * managed position would look closable and its rent would just be paid
+       * again by the next rebalance. Partial service is not appropriate here:
+       * the whole request is refused and nothing is closed.
+       */
+      if (!inUse.complete) {
+        return reply.code(503).send({
+          error:
+            "a managed pool's tokens could not be read, so the in-use guard cannot be confirmed — nothing was closed; retry once the RPC recovers",
+        });
+      }
+
       const byPubkey = new Map<string, TokenAccountView>(
         raw.map((a) => [a.pubkey, buildTokenView(a, undefined, inUse.mints)]),
       );

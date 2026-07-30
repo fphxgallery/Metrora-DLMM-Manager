@@ -263,7 +263,11 @@ export function WalletPanel({
                 </>
               )}
             </span>
-            <button className="btn primary" disabled={busy || picked.size === 0} onClick={() => void claim()}>
+            <button
+              className="btn primary"
+              disabled={busy || picked.size === 0 || !data.protectionComplete}
+              onClick={() => void claim()}
+            >
               CLAIM RENT
             </button>
           </div>
@@ -271,7 +275,8 @@ export function WalletPanel({
           {!data.protectionComplete && (
             <div className="msg" style={{ marginTop: 10, borderColor: "var(--warn)" }}>
               <b className="warn">A pool's tokens could not be read.</b> A managed position's accounts are normally
-              hidden here; right now one may be listed that should not be. The claim itself still refuses them.
+              hidden here; right now one may be listed that should not be. Claiming is disabled entirely until the pool
+              reads recover.
             </div>
           )}
         </>
