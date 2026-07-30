@@ -323,17 +323,28 @@ button.pill-btn[aria-pressed="true"] {
   background: rgba(56, 225, 255, 0.08);
 }
 
-/* The one-line answer above the chart that the chart then explains. */
-.verdict {
+/* The panel's heading IS its answer: the net figure, with the caption beneath it
+   and the timeframe pills opposite. Aligned to the top rather than the baseline so
+   the pills stay level with the number and not with the caption under it. */
+.verdict-hd {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin: 0 0 6px;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 12px;
 }
-.verdict b {
+.verdict-hd > :last-child {
+  margin-left: auto;
+}
+.verdict-hd b {
+  display: block;
   font-size: 24px;
   font-weight: 400;
   letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+.verdict-hd .faint {
+  font-size: 10px;
+  margin-top: 2px;
 }
 
 .chart-wrap {

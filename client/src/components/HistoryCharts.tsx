@@ -38,7 +38,10 @@ export interface CadenceProps {
 // fixed and the container decides how big a unit is.
 const L = 46;
 const R = 694;
-const TOP = 14;
+// Headroom for the topmost gridline's label. At 14 it sat hard against the panel's
+// heading row; the label is drawn at the line's own y, so the line needs to start
+// below the text above it.
+const TOP = 20;
 
 /**
  * Round gridline values covering 0..max.
@@ -146,22 +149,24 @@ export function HistoryCharts({ cadence }: { cadence: CadenceProps }) {
   return (
     <>
       <div className="panel">
-        <div className="panel-hd">
-          <h2>Does the automation pay?</h2>
+        {/* The net figure IS the heading — "does the automation pay?" was a question
+            this number answers, so it was a row of chrome above the answer. Caption
+            below rather than beside it, which keeps the pills pinned top-right at
+            every width instead of letting a long caption push them onto their own
+            line. */}
+        <div className="verdict-hd">
+          <div>
+            <b className={netUsd == null ? "" : netUsd >= 0 ? "good" : "bad"}>
+              {netUsd == null ? "—" : `${netUsd >= 0 ? "+" : "−"}${fmtUsd(Math.abs(netUsd))}`}
+            </b>
+            <div className="faint">
+              {netUsd == null
+                ? "does the automation pay?"
+                : `net ${tf === "ALL" ? "all time" : `over ${tf.toLowerCase()}`} · fees earned minus rebalance cost`}
+            </div>
+          </div>
           {pills}
         </div>
-
-        {netUsd != null && (
-          <div className="verdict">
-            <b className={netUsd >= 0 ? "good" : "bad"}>
-              {netUsd >= 0 ? "+" : "−"}
-              {fmtUsd(Math.abs(netUsd))}
-            </b>
-            <span className="faint">
-              net {tf === "ALL" ? "all time" : `over ${tf.toLowerCase()}`} · fees earned minus rebalance cost
-            </span>
-          </div>
-        )}
 
         {drawable && h ? (
           <PayChart
