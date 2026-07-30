@@ -193,6 +193,10 @@ The **METRICS** tab charts cumulative fees earned against cumulative rebalance c
 90d or **ALL**. Where the two cross is the moment the automation stopped costing money and started
 making it.
 
+The panel has no title — it leads with the answer instead. Fees earned minus rebalance cost over the
+selected window *is* the heading, with the timeframe pills opposite it. (Before there is anything to
+show, the heading falls back to the question.)
+
 `ALL` is a timeframe rather than a separate lifetime panel, deliberately: the same figures read the
 same way, in one place, so a total can never disagree with the chart beside it.
 
