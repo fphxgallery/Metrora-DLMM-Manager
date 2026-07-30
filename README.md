@@ -9,7 +9,9 @@ positions, watches the active bin, and re-centres automatically — with guards 
 spending more on rebalancing than the position can earn.
 
 - Docker or systemd deployment on Linux
-- Pool search over Meteora's indexed data (TVL, volume, fee/TVL, APR)
+- Pool search over Meteora's indexed data (TVL, volume, daily fee/TVL)
+- Per-position fee/TVL rate measured against the pool's own, so you can see whether
+  a position is beating a passive LP in the same pool
 - Open / add / claim / exit positions from the browser
 - Automatic rebalancing with cooldown, edge-buffer and cost guards
 - Hot wallet created or imported in the UI (or from a CLI)
@@ -203,6 +205,34 @@ line below that belong to the position, whatever window is showing.
 Rent is counted in cost. The rent a rebalance pays is for **bin arrays**, which are pool-owned, shared
 between every LP in the pool, and have no close instruction — that lamport never comes back. Position
 *account* rent, which is refunded when you close, is not counted here.
+
+### Is this position beating the pool?
+
+Each position card carries a fee/TVL rate: fee income as a percent of position value
+per 24 hours, next to the same figure for the pool it sits in.
+
+The comparison is the point. A rate on its own says nothing — 0.4% a day is
+excellent in one pool and poor in another. Against the pool's own rate it becomes a
+verdict. **Above** means the range is concentrated where the volume is, which is
+what a managed position is for. **Below** means the position is earning less than a
+passive LP in the same pool would, while still paying to rebalance — the one failure
+this app can actively cause, and previously the tab gave you no way to see it.
+
+The position's figure is measured, not estimated: the sample log already records
+all-time fees per position, so the rate is what the position genuinely earned over
+the sampled window, scaled to 24 hours. Before an hour of history exists it falls
+back to the lifetime average from the indexer's all-time fees. **The label always
+names what was actually measured** — `24h`, `6h`, `since open`, or `pool fee / TVL`
+when there is nothing position-specific yet. A six-hour reading is never presented
+as a 24-hour rate, and the pool's rate is never presented as yours.
+
+The sparkline is each hour's own rate, not a running total, so its slope is the
+trend. A falling line while the price sits inside your range means volume has moved
+elsewhere in the pool.
+
+> One API note, since it is easy to get wrong: the Data API's `apr` field is
+> byte-identical to `fee_tvl_ratio["24h"]` — a **daily** percent, not an annualised
+> one. This app exposes it as `feeTvlDailyPct` for that reason.
 
 ### The churn signal
 
