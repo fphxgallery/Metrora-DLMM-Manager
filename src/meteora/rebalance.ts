@@ -399,8 +399,9 @@ async function withdrawAndRecentre(
 
   // Upper bound on what this leg will release into the wallet, journalled
   // BEFORE the send so a crash immediately after it lands still leaves resume a
-  // cap to work from. Without one, resume falls back to the entire wallet
-  // balance of that mint and could swap funds this rebalance never withdrew.
+  // cap to work from. Without one, resume cannot tell how much of the wallet
+  // belongs to this rebalance, and marks the entry failed for manual recovery
+  // rather than guessing — see the refusals in resumeJournal.
   const xBps = plan.swap!.xWithdrawBps;
   const sideRaw =
     xBps > 0
@@ -817,9 +818,30 @@ export async function resumeJournal(
         const fromProgram = fromMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
         const available = await client.tokenBalance(fromMint, fromProgram);
         const intended = new BN(entry.swap?.inAmount ?? "0");
+        // An unjournalled amount used to fall back to `available` — "swap
+        // everything we can see". That is not a safe proxy for "what this
+        // rebalance withdrew": `tokenBalance` folds native SOL above the
+        // MIN_SOL_BALANCE reserve into the wSOL balance (client.ts), so for a
+        // wSOL leg `available` is very nearly the whole wallet, and even for a
+        // non-wSOL leg it includes the idle quote buffer `ensureQuoteBuffer`
+        // deliberately parks there. Refuse and tell the operator instead.
+        if (intended.isZero()) {
+          store.updateJournal(entry.id, {
+            phase: "failed",
+            error:
+              "the withdraw leg landed but the amount to swap was never journalled — the withdrawn " +
+              "surplus is sitting in the wallet; re-deposit it with POST /api/positions/" +
+              `${entry.positionPk}/add`,
+          });
+          log.error(
+            { journalId: entry.id, positionPk: entry.positionPk, mint: inMint },
+            "resume: swap amount unknown — marked failed, surplus is in the wallet",
+          );
+          continue;
+        }
         // Swap the smaller of what we meant to move and what is actually there,
         // so a partially-completed swap is not double-spent.
-        const amount = intended.isZero() ? available : BN.min(intended, available);
+        const amount = BN.min(intended, available);
         if (amount.isZero()) {
           store.updateJournal(entry.id, { phase: "failed", error: "nothing left to swap on resume" });
           continue;
@@ -836,7 +858,24 @@ export async function resumeJournal(
         const toProgram = toMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
         const available = await client.tokenBalance(toMint, toProgram);
         const intended = new BN(entry.swap?.outAmount ?? "0");
-        const amount = intended.isZero() ? available : BN.min(intended, available);
+        // Same refusal as the swap branch above, for the same reason: `available`
+        // includes native SOL above the reserve for wSOL and the idle quote
+        // buffer otherwise, so it cannot stand in for the swap's proceeds.
+        if (intended.isZero()) {
+          store.updateJournal(entry.id, {
+            phase: "failed",
+            error:
+              "the swap leg landed but the amount it produced was never journalled — the swap " +
+              "proceeds are sitting in the wallet; re-deposit them with POST /api/positions/" +
+              `${entry.positionPk}/add`,
+          });
+          log.error(
+            { journalId: entry.id, positionPk: entry.positionPk, mint: outMint },
+            "resume: deposit amount unknown — marked failed, proceeds are in the wallet",
+          );
+          continue;
+        }
+        const amount = BN.min(intended, available);
         resumeResults.push(...(await depositProceeds(deps, entry, planWithSwapFrom(plan, entry), amount)));
       }
 
