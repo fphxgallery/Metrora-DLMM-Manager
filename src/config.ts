@@ -37,6 +37,22 @@ export interface Config {
   dataApiUrl: string;
   dataApiCacheMs: number;
 
+  // --- wallet buffer ---
+  /**
+   * Quote-token balance, in USD, to keep idle in the wallet.
+   *
+   * The rebalance instruction tops up rounding shortfalls from the wallet's ATA:
+   * with `STRATEGY_TYPE=Curve` the redeposit side can ask for marginally more of a
+   * token than the withdraw released, and an empty ATA turns that into an SPL Token
+   * "insufficient funds" (0x1) at simulation. The shortfall is cents; the floor
+   * exists so it is always covered.
+   */
+  minQuoteBalanceUsd: number;
+  /** Swap a little SOL into the quote token when the buffer runs dry. */
+  autoTopUp: boolean;
+  /** Hard ceiling on a single top-up, so a mispriced quote cannot drain the wallet. */
+  maxTopUpUsd: number;
+
   // --- pnl history ---
   /** How often each managed position's PnL is written to the sample log. */
   sampleIntervalMin: number;
@@ -111,6 +127,12 @@ export function loadConfig(): Config {
 
     dataApiUrl: str("DATA_API_URL", "https://dlmm.datapi.meteora.ag"),
     dataApiCacheMs: num("DATA_API_CACHE_MS", 10_000),
+
+    minQuoteBalanceUsd: num("MIN_QUOTE_BALANCE_USD", 1),
+    autoTopUp: bool("AUTO_TOPUP", true),
+    // Twice the default floor. A top-up is meant to cover rounding, so anything
+    // approaching this ceiling means the price or the balance read is wrong.
+    maxTopUpUsd: num("MAX_TOPUP_USD", 5),
 
     // 15 minutes gives 96 readings a day — a dense 24h chart at ~8,600 rows per
     // position over the 90-day window, which is nothing as an appended log and
@@ -187,6 +209,18 @@ function validate(cfg: Config): void {
     );
   }
   if (cfg.cooldownMin < 0) throw new Error(`COOLDOWN_MIN must be >= 0 (got ${cfg.cooldownMin})`);
+  if (cfg.minQuoteBalanceUsd < 0) {
+    throw new Error(`MIN_QUOTE_BALANCE_USD must be >= 0 (got ${cfg.minQuoteBalanceUsd})`);
+  }
+  if (cfg.maxTopUpUsd <= 0) {
+    throw new Error(`MAX_TOPUP_USD must be > 0 (got ${cfg.maxTopUpUsd})`);
+  }
+  if (cfg.maxTopUpUsd < cfg.minQuoteBalanceUsd) {
+    throw new Error(
+      `MAX_TOPUP_USD (${cfg.maxTopUpUsd}) must be >= MIN_QUOTE_BALANCE_USD (${cfg.minQuoteBalanceUsd}) — ` +
+        "otherwise the ceiling forbids the very top-up the floor asks for",
+    );
+  }
   if (cfg.sampleIntervalMin <= 0) {
     throw new Error(`SAMPLE_INTERVAL_MIN must be > 0 (got ${cfg.sampleIntervalMin})`);
   }

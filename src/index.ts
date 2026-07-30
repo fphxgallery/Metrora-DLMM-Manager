@@ -54,7 +54,16 @@ async function main(): Promise<void> {
     reloadFromEnv: makeReload(cfg, envPath),
   };
 
-  const rebalanceDeps: RebalanceDeps = { cfg, client, dataApi, sender, swapper, store, log };
+  const rebalanceDeps: RebalanceDeps = {
+    cfg,
+    client,
+    dataApi,
+    sender,
+    swapper,
+    store,
+    log,
+    notify: (msg) => notifier.notify(msg),
+  };
   const engine = new Engine(ctx, rebalanceDeps, notifier);
   ctx.engine = engine;
 

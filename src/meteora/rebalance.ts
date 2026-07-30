@@ -4,7 +4,7 @@ import { LAMPORTS_PER_SOL, PublicKey, Transaction } from "@solana/web3.js";
 import type { Config, StrategyTypeName } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { JournalEntry, Store } from "../state.js";
-import type { DataApi } from "./datapi.js";
+import { WSOL_MINT, type DataApi } from "./datapi.js";
 import type { MeteoraClient } from "./client.js";
 import { TxError, type TxSender, type SendResult } from "../tx/send.js";
 import type { JupiterSwap } from "../swap/jupiter.js";
@@ -65,6 +65,8 @@ export interface RebalanceDeps {
   swapper: JupiterSwap;
   store: Store;
   log: Logger;
+  /** Optional push channel, so a low wallet buffer is not only a log line. */
+  notify?: (msg: string) => void;
 }
 
 export interface RebalancePlan {
@@ -206,6 +208,19 @@ export async function planRebalance(
  */
 export async function executeRebalance(deps: RebalanceDeps, plan: RebalancePlan): Promise<RebalanceOutcome> {
   const { store, log } = deps;
+
+  // Before anything is journalled or sent: the rebalance instruction settles
+  // rounding shortfalls out of the wallet's quote-token ATA, and an empty one
+  // fails the whole thing at simulation.
+  const meta = await deps.dataApi.pool(plan.poolAddress).catch(() => null);
+  if (meta) {
+    await ensureQuoteBuffer(deps, {
+      quoteMint: meta.token_y.address,
+      quoteSymbol: meta.token_y.symbol,
+      quotePriceUsd: meta.token_y.price,
+      quoteDecimals: meta.token_y.decimals,
+    });
+  }
 
   const entry: JournalEntry = {
     id: randomUUID(),
@@ -426,8 +441,136 @@ async function withdrawAndRecentre(
   return results;
 }
 
-/** Phase 2 of path B. Returns what actually landed in the wallet. */
-/** Exported for tests: the retry count and what it refuses to retry are the risk here. */
+/**
+ * How much SOL to spend topping the quote buffer back up, or why not to.
+ *
+ * Separated from the I/O so the arithmetic can be tested: every branch here either
+ * spends real SOL or declines to, and getting the reserve interaction wrong would
+ * trade an empty quote balance for an empty SOL balance.
+ */
+export function planTopUp(args: {
+  balanceUsd: number;
+  floorUsd: number;
+  maxTopUpUsd: number;
+  solPriceUsd: number;
+  solBalance: number;
+  minSolBalance: number;
+}): { wantUsd: number; wantSol: number } | { skip: string } {
+  const { balanceUsd, floorUsd, maxTopUpUsd, solPriceUsd, solBalance, minSolBalance } = args;
+  if (balanceUsd >= floorUsd) return { skip: "buffer is already above the floor" };
+  if (!(solPriceUsd > 0)) return { skip: "SOL price unavailable" };
+
+  // Refill to twice the floor, so a rebalance that consumes a few cents does not
+  // trigger another top-up on the very next tick.
+  const wantUsd = Math.min(maxTopUpUsd, floorUsd * 2 - balanceUsd);
+  const wantSol = wantUsd / solPriceUsd;
+
+  // MIN_SOL_BALANCE is what keeps fees and rent payable and is not ours to spend.
+  const spendableSol = solBalance - minSolBalance;
+  if (spendableSol <= 0 || wantSol > spendableSol) {
+    return { skip: "SOL above MIN_SOL_BALANCE is insufficient to top it up" };
+  }
+  return { wantUsd, wantSol };
+}
+
+/**
+ * Keeps a small idle balance of the quote token in the wallet, topping it up by
+ * swapping a little SOL when AUTO_TOPUP is on.
+ *
+ * Why this exists: the rebalance instruction settles rounding shortfalls out of
+ * the wallet's ATA. With `STRATEGY_TYPE=Curve` the redeposit side can ask for
+ * marginally more of a token than the withdraw released, and against an empty ATA
+ * that surfaces as SPL Token "insufficient funds" (0x1) at simulation — observed
+ * live, the whole rebalance failing before its first transaction was sent. The
+ * shortfall is cents; a dollar left idle covers it permanently.
+ *
+ * Never throws. A rebalance that would have worked anyway must not be blocked
+ * because the buffer could not be priced or the top-up did not fill.
+ */
+export async function ensureQuoteBuffer(
+  deps: RebalanceDeps,
+  args: { quoteMint: string; quoteSymbol: string; quotePriceUsd: number; quoteDecimals: number },
+): Promise<{ balanceUsd: number | null; toppedUpUsd?: number; low: boolean }> {
+  const { cfg, client, sender, swapper, log } = deps;
+  const floor = cfg.minQuoteBalanceUsd;
+  if (floor <= 0) return { balanceUsd: null, low: false };
+
+  const wallet = client.wallet();
+  if (!wallet || !(args.quotePriceUsd > 0)) return { balanceUsd: null, low: false };
+
+  let balanceUsd: number;
+  try {
+    const raw = await client.tokenBalance(new PublicKey(args.quoteMint));
+    balanceUsd = (Number(raw.toString()) / 10 ** args.quoteDecimals) * args.quotePriceUsd;
+  } catch (e) {
+    log.debug({ err: e instanceof Error ? e.message : String(e) }, "quote balance read failed");
+    return { balanceUsd: null, low: false };
+  }
+  if (balanceUsd >= floor) return { balanceUsd, low: false };
+
+  if (!cfg.autoTopUp) {
+    log.warn(
+      { balanceUsd, floor, symbol: args.quoteSymbol },
+      "quote-token buffer is below MIN_QUOTE_BALANCE_USD and AUTO_TOPUP is off",
+    );
+    deps.notify?.(
+      `🪙 ${args.quoteSymbol} buffer is $${balanceUsd.toFixed(2)}, below MIN_QUOTE_BALANCE_USD $${floor}. ` +
+        "AUTO_TOPUP is off, so a rebalance may fail on a rounding shortfall it cannot cover.",
+    );
+    return { balanceUsd, low: true };
+  }
+
+  const solPriceUsd = await deps.dataApi.solPriceUsd().catch(() => 0);
+  const solBalance = await client.solBalance().catch(() => 0);
+  const plan = planTopUp({
+    balanceUsd,
+    floorUsd: floor,
+    maxTopUpUsd: cfg.maxTopUpUsd,
+    solPriceUsd,
+    solBalance,
+    minSolBalance: cfg.minSolBalance,
+  });
+  if ("skip" in plan) {
+    log.warn(
+      { balanceUsd, floor, solBalance, reason: plan.skip },
+      "quote-token buffer is low and could not be topped up",
+    );
+    deps.notify?.(
+      `🪙 ${args.quoteSymbol} buffer is $${balanceUsd.toFixed(2)}, below MIN_QUOTE_BALANCE_USD $${floor} — ` +
+        `${plan.skip}. A rebalance may fail on a rounding shortfall it cannot cover.`,
+    );
+    return { balanceUsd, low: true };
+  }
+
+  try {
+    const quote = await swapper.quote({
+      inputMint: WSOL_MINT,
+      outputMint: args.quoteMint,
+      amount: new BN(Math.floor(plan.wantSol * LAMPORTS_PER_SOL)),
+    });
+    const tx = await swapper.buildTransaction(quote, wallet);
+    const result = await sender.sendVersioned(tx, `top up ${args.quoteSymbol} buffer`);
+    if (!result.signature) return { balanceUsd, low: true };
+    log.info(
+      { balanceUsd, floor, toppedUpUsd: plan.wantUsd, symbol: args.quoteSymbol, signature: result.signature },
+      "topped up the quote-token buffer",
+    );
+    return { balanceUsd, toppedUpUsd: plan.wantUsd, low: false };
+  } catch (e) {
+    // Worth a warning, not a failure: the rebalance may not need the buffer at all.
+    log.warn(
+      { err: e instanceof Error ? e.message : String(e), balanceUsd, floor },
+      "quote-token top-up failed — continuing, the rebalance may still succeed",
+    );
+    return { balanceUsd, low: true };
+  }
+}
+
+/**
+ * Phase 2 of path B. Returns what actually landed in the wallet.
+ *
+ * Exported for tests: the retry count and what it refuses to retry are the risk here.
+ */
 export async function runSwapLeg(
   deps: RebalanceDeps,
   entry: JournalEntry,

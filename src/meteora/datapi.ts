@@ -96,7 +96,7 @@ export interface PositionPnLResponse {
  * name search returns ~123 pools, 13 of which are not SOL/USDC at all
  * ("USDT sol-USDC", "SOL-USDC-USDT", …) and price at 0.
  */
-const WSOL_MINT = "So11111111111111111111111111111111111111112";
+export const WSOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
 /** Cache entries kept before the oldest is dropped. */
