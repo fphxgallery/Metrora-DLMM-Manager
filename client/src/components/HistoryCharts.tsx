@@ -181,11 +181,10 @@ export function HistoryCharts() {
             <h2>Net PnL including price move</h2>
             <span className="faint">{fmtUsd(h.pnl[h.pnl.length - 1].usd)} now</span>
           </div>
+          {/* Its own chart, never a second axis on the one above: impermanent loss
+              from the pair moving is far larger than fee income, so sharing a scale
+              would render the fee signal invisible. */}
           <PnlChart points={clampFrom(h.pnl, plotFrom)} from={plotFrom} to={h.to} />
-          <p className="note">
-            Its own chart, never a second axis on the one above. Impermanent loss from the pair moving is far larger
-            than fee income, so sharing a scale would render the fee signal invisible.
-          </p>
         </div>
       )}
     </>
