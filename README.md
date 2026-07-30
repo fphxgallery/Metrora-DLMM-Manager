@@ -13,7 +13,7 @@ spending more on rebalancing than the position can earn.
 - Open / add / claim / exit positions from the browser
 - Automatic rebalancing with cooldown, edge-buffer and cost guards
 - Hot wallet created or imported in the UI (or from a CLI)
-- Cost-vs-fees charts over 24h / 7d / 30d / 90d, so "does this pay?" has an answer
+- Cost-vs-fees charts over 24h / 7d / 30d / 90d / all time, so "does this pay?" has an answer
 - Crash-safe: a rebalance interrupted mid-sequence is resolved in-run, not at the next restart
 
 ## Quick start
@@ -184,14 +184,21 @@ width. To widen a position you already hold, exit and reopen it.
 
 ## Does the automation pay?
 
-The **METRICS** tab charts cumulative fees earned against cumulative rebalance cost over 24h, 7d, 30d
-or 90d. Where the two cross is the moment the automation stopped costing money and started making it.
+The **METRICS** tab charts cumulative fees earned against cumulative rebalance cost over 24h, 7d, 30d,
+90d or **ALL**. Where the two cross is the moment the automation stopped costing money and started
+making it.
+
+`ALL` is a timeframe rather than a separate lifetime panel, deliberately: the same figures read the
+same way, in one place, so a total can never disagree with the chart beside it.
 
 Cost is drawn as a **step**, because it only moves when a rebalance lands — a smooth line would imply
 continuous spending and hide that the spend is lumpy. Ticks under the axis mark each rebalance, so a
-cluster of ticks against a flat fee line is the churn signal. PnL including price movement gets its
-own chart rather than a second axis: impermanent loss dwarfs fee income, and a shared scale would make
-the fee signal invisible.
+cluster of ticks against a flat fee line is the churn signal.
+
+PnL including price movement sits under that chart, sharing its x-axis but keeping **its own y-scale**.
+Impermanent loss dwarfs fee income, so putting both on one axis would flatten the fee signal into
+noise. Every figure in the tile row below belongs to the selected window; the numbers on the position
+line below that belong to the position, whatever window is showing.
 
 Rent is counted in cost. The rent a rebalance pays is for **bin arrays**, which are pool-owned, shared
 between every LP in the pool, and have no close instruction — that lamport never comes back. Position
@@ -199,7 +206,7 @@ between every LP in the pool, and have no close instruction — that lamport nev
 
 ### The churn signal
 
-**Median gap** in the Behaviour tiles turns amber, and suggests a fix, only when the cadence is
+**Median gap** in the tile row turns amber, and suggests a fix, only when the cadence is
 actually churning: the median gap sitting at or under 1.5× the cooldown those gaps were subject to.
 That is what churn *is* — the position re-centring about as fast as it is allowed to, which means
 `COOLDOWN_MIN` is the only thing holding it back and the range itself is too tight. A fixed threshold
@@ -212,11 +219,13 @@ back to a five-minute floor.
 Meteora's Data API reports only what a position is worth *now* — there is no historical endpoint. So
 fees and PnL are sampled by this app every `SAMPLE_INTERVAL_MIN` minutes into an append-only
 `data/samples.jsonl`, and **a window that was never sampled can never be backfilled**. On a fresh
-install the 24h chart fills within a day, 7d within a week, and the longer views stay explicitly empty
-until that much history exists rather than drawing a line through data that isn't there.
+install the 24h chart fills within a day and 7d within a week. A window longer than the history is not
+padded out with a flat line — the plot starts where the data starts, so asking for 90 days with a day
+of samples charts that day and says so on the axis.
 
 The cost curve is the exception: every rebalance record already carries its own timestamp, so cost is
-exact right back to the first rebalance even on a fresh install.
+exact right back to the first rebalance even on a fresh install. On `ALL` you will see the cost step
+begin before the fee line does, for exactly that reason.
 
 One accounting rule worth knowing: cost and fee income are always drawn from the **same set of
 positions**. Fee income can only be read for positions still managed, so spending on closed positions
