@@ -184,6 +184,16 @@ Rent is counted in cost. The rent a rebalance pays is for **bin arrays**, which 
 between every LP in the pool, and have no close instruction — that lamport never comes back. Position
 *account* rent, which is refunded when you close, is not counted here.
 
+### The churn signal
+
+**Median gap** in the Behaviour tiles turns amber, and suggests a fix, only when the cadence is
+actually churning: the median gap sitting at or under 1.5× the cooldown those gaps were subject to.
+That is what churn *is* — the position re-centring about as fast as it is allowed to, which means
+`COOLDOWN_MIN` is the only thing holding it back and the range itself is too tight. A fixed threshold
+cannot express this, since 70 minutes is churn on an hour-long cooldown and unremarkable on a
+five-minute one. Per-position cooldown overrides are taken into account, and `COOLDOWN_MIN=0` falls
+back to a five-minute floor.
+
 ### History has to be collected
 
 Meteora's Data API reports only what a position is worth *now* — there is no historical endpoint. So
