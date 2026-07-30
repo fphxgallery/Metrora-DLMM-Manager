@@ -98,6 +98,26 @@ export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, re
     if (!poolAddress) return reply.code(400).send({ error: "poolAddress is required" });
     if (ctx.engine?.isBusy(pk)) return reply.code(409).send({ error: "a rebalance is already in flight" });
 
+    // The cooldown / range / cost guards above are POLICY — the operator is
+    // entitled to overrule them. This one is CORRECTNESS, so it is not
+    // overridable: an unresolved journal entry means withdrawn funds are
+    // sitting in the wallet mid path-B, and starting a second rebalance would
+    // open a SECOND entry against the same position. Resume attributes a leg by
+    // the range change it caused, which cannot distinguish two entries on one
+    // position — so with two pending, NEITHER is resumable from range evidence
+    // and the funds stay stranded. Refusing here keeps the one entry resolvable.
+    const unfinished = store.pendingJournal().find((j) => j.positionPk === pk);
+    if (unfinished) {
+      return reply.code(409).send({
+        error:
+          `unfinished rebalance ${unfinished.id} is pending at phase "${unfinished.phase}" — ` +
+          `the engine retries it automatically about every 2 minutes, and a manual rebalance now ` +
+          `would open a second entry that makes both unresolvable. Wait for it to clear (watch /api/journal).`,
+        journalId: unfinished.id,
+        phase: unfinished.phase,
+      });
+    }
+
     return run(reply, async () => {
       const plan = await planRebalance(rebalanceDeps, {
         positionPk: pk,
