@@ -14,7 +14,6 @@ interface History {
   tf: string;
   from: number;
   to: number;
-  enough: boolean;
   collectingSince: number | null;
   sampleIntervalMin: number;
   fees: Point[];
@@ -167,12 +166,6 @@ export function HistoryCharts() {
           </div>
         )}
 
-        {drawable && h && !h.enough && (
-          <p className="note">
-            History starts {fmtAgo(h.collectingSince ?? undefined)}, so this window is not full yet. Cost is exact
-            regardless — every rebalance carries its own timestamp.
-          </p>
-        )}
       </div>
 
       {h && h.pnl.length >= 2 && (
