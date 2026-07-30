@@ -167,6 +167,13 @@ Two more things the defaults assume, both worth checking against your own pool:
 - **The swap path costs roughly 30× the atomic path** (three transactions plus swap slippage,
   versus one instruction whose fee is a rounding error). `RATIO_TOLERANCE_BPS=3000` is set high
   deliberately, to stay on the cheap path unless the position is badly one-sided.
+- **`EDGE_BUFFER_BINS` decides which path you get**, which is not obvious. A large buffer relative
+  to `RANGE_BINS` fires the rebalance while the active bin is still well inside the range — and with
+  `STRATEGY_TYPE=Curve`, which concentrates liquidity at the centre, one side is already drained by
+  then. Observed live on a `RANGE_BINS=34` / `EDGE_BUFFER_BINS=20` position: it triggered at ~14 bins
+  off centre with a token ratio near 1400bps, so **every** rebalance took the swap path and none took
+  the atomic one. If you are seeing no atomic rebalances in METRICS, lower `EDGE_BUFFER_BINS` so it
+  triggers later, closer to balanced.
 - **The cost guard uses the pool-wide fee rate**, which understates what a concentrated position
   earns while in range. That makes it conservative by design — but it also means small positions
   (roughly under $3–5k on a major pair) will see swap-leg rebalances refused as not worth the cost,
