@@ -458,6 +458,38 @@ button.pill-btn[aria-pressed="true"] {
   margin-left: auto;
 }
 
+/* Fee income as a rate, under a position's Performance tiles. */
+.rate-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.rate-row b {
+  font-weight: 400;
+  color: var(--text);
+  font-size: 15px;
+}
+.rate-row b.good {
+  color: var(--good);
+}
+.rate-row b.warn {
+  color: var(--warn);
+}
+.rate-row span b:not(:first-child),
+.rate-row span:not(:first-child) b {
+  font-size: 11px;
+}
+.rate-row .spark {
+  margin-left: auto;
+  line-height: 0;
+}
+
 /* One managed position, on one line — a table row's worth of facts without the
    table's header, borders and vertical padding. */
 .pos-line {

@@ -38,6 +38,11 @@ export interface PositionView {
     openedAt: number;
     timeInRangePct: number | null;
   } | null;
+  feeRate: {
+    position: { pctPer24h: number; hours: number; basis: "realized" | "since-open" } | null;
+    poolPctPer24h: number | null;
+    trend: number[];
+  };
   pnl: { pnlUsd: number; pnlPctChange: number; allTimeFeesUsd: number } | null;
 }
 
@@ -249,6 +254,8 @@ function PositionCard({
         <TimeInRangeTile p={p} defaultEdgeBufferBins={defaultEdgeBufferBins} />
       </div>
 
+      <FeeRateRow rate={p.feeRate} valueUsd={p.valueUsd} />
+
       <div className="faint" style={{ marginTop: 10, fontSize: 11 }}>
         {p.managed ? fmtNum(p.managed.rebalanceCount) : "—"} rebalances ·{" "}
         {p.managed?.lastRebalanceAt ? fmtAgo(p.managed.lastRebalanceAt) : "never"} · position {shortPk(p.positionPk)} ·
@@ -362,6 +369,90 @@ function RangeBar({ p, defaultEdgeBufferBins }: { p: PositionView; defaultEdgeBu
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
+}
+
+/**
+ * Fee income as a rate, measured against the pool's own.
+ *
+ * The rate alone does not say whether it is good. Against `fee_tvl_ratio["24h"]` for
+ * the same pool it does: below the pool means this position earns less than a
+ * passive LP in it would, while still paying to rebalance — the one failure this
+ * app can cause and could not previously show.
+ */
+function FeeRateRow({
+  rate,
+  valueUsd,
+}: {
+  rate: PositionView["feeRate"];
+  valueUsd: number;
+}) {
+  const { position, poolPctPer24h, trend } = rate;
+  if (!position && poolPctPer24h == null) return null;
+
+  // Labelled with what was actually measured. A six-hour reading called "24h" is a
+  // lie; the pool's rate shown as the position's is a worse one.
+  const label =
+    position == null
+      ? "pool fee / TVL · 24h"
+      : position.basis === "since-open"
+        ? "fee / TVL · since open"
+        : position.hours >= 23
+          ? "fee / TVL · 24h"
+          : `fee / TVL · ${Math.round(position.hours)}h`;
+
+  const pct = position?.pctPer24h ?? poolPctPer24h ?? 0;
+  const perDayUsd = (pct / 100) * valueUsd;
+  const vsPool = position != null && poolPctPer24h != null && poolPctPer24h > 0 ? pct / poolPctPer24h : null;
+
+  return (
+    <div className="rate-row">
+      <span>
+        <b className={vsPool == null ? "" : vsPool >= 1 ? "good" : "warn"}>{fmtPct(pct, 2)}</b> {label}
+      </span>
+      {position != null && poolPctPer24h != null && (
+        <span>
+          pool <b>{fmtPct(poolPctPer24h, 2)}</b>
+        </span>
+      )}
+      {vsPool != null && (
+        <span className={vsPool >= 1 ? "good" : "warn"}>
+          {vsPool >= 1 ? `${vsPool.toFixed(1)}× the pool` : `${(vsPool * 100).toFixed(0)}% of the pool`}
+        </span>
+      )}
+      <span className="faint">≈ {fmtUsd(perDayUsd)} / day at this rate</span>
+      {trend.length >= 2 && <Sparkline values={trend} />}
+    </div>
+  );
+}
+
+/** Per-bucket rates, oldest first. Slope is the story; there is no y-axis. */
+function Sparkline({ values }: { values: number[] }) {
+  const W = 120;
+  const H = 22;
+  const hi = Math.max(...values);
+  const lo = Math.min(...values);
+  const span = hi - lo || 1;
+  const pts = values
+    .map((v, i) => {
+      const x = 2 + (i / Math.max(1, values.length - 1)) * (W - 4);
+      const y = H - 3 - ((v - lo) / span) * (H - 8);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const rising = values[values.length - 1] >= values[0];
+  return (
+    <span className="spark">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width={W}
+        height={H}
+        role="img"
+        aria-label={`Fee rate trend across ${values.length} hourly buckets, ${rising ? "rising" : "falling"}`}
+      >
+        <polyline points={pts} fill="none" stroke={rising ? "var(--good)" : "var(--warn)"} strokeWidth={1.5} />
+      </svg>
+    </span>
+  );
 }
 
 function Tile({ label, value, sub, cls }: { label: string; value: string; sub?: string; cls?: string }) {

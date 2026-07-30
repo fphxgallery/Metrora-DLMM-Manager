@@ -6,6 +6,15 @@ import type { DataApi, DataApiPool, PositionPnL } from "./datapi.js";
 import type { MeteoraClient } from "./client.js";
 import { DLMM, type DlmmPool, type PositionData } from "./sdk.js";
 import { priceOfBin, rangeStatus, toUi, valuePosition } from "./pricing.js";
+import { feeRateSeries, realizedFeeRate, sinceOpenFeeRate, type FeeRate } from "../metrics.js";
+import type { PnlSample, SampleLog } from "../history.js";
+
+/** Window the position fee rate is measured over when there is enough history. */
+const RATE_WINDOW_MS = 86_400_000;
+/** Trend bucket. Wider than the sample interval, or buckets alternate 1 sample / 0. */
+const RATE_BUCKET_MS = 3_600_000;
+/** Below this much sampled history the lifetime average is the better estimate. */
+const MIN_REALIZED_HOURS = 1;
 
 export interface PositionView {
   positionPk: string;
@@ -55,6 +64,21 @@ export interface PositionView {
     pnlPctChange: number;
     allTimeFeesUsd: number;
   } | null;
+
+  /**
+   * Fee income as a rate, so it can be judged rather than just read.
+   *
+   * `position` is what this position earned; `poolPctPer24h` is the pool's own
+   * `fee_tvl_ratio["24h"]` for the same measure. Below the pool means this position
+   * is earning less than a passive LP in the same pool while still paying rebalance
+   * costs — the failure mode that is otherwise invisible.
+   */
+  feeRate: {
+    position: FeeRate | null;
+    poolPctPer24h: number | null;
+    /** Per-bucket rates for a trend line, oldest first. */
+    trend: number[];
+  };
 }
 
 /**
@@ -70,11 +94,17 @@ export async function listPositions(deps: {
   client: MeteoraClient;
   dataApi: DataApi;
   store: Store;
+  samples: SampleLog;
   log: Logger;
 }): Promise<PositionView[]> {
-  const { cfg, client, dataApi, store, log } = deps;
+  const { cfg, client, dataApi, store, samples, log } = deps;
   const kp = client.wallet();
   if (!kp) return [];
+
+  // One read for every position, rather than one per position: the log is parsed
+  // and cached whole, but filtering it per position is cheap.
+  const now = Date.now();
+  const sampleRows = samples.read(now - RATE_WINDOW_MS);
 
   const byPool = await DLMM.getAllLbPairPositionsByUser(client.connection, kp.publicKey, {
     cluster: cfg.cluster,
@@ -109,6 +139,8 @@ export async function listPositions(deps: {
           data: p.positionData,
           activeBinId,
           managed: store.position(p.publicKey.toBase58()) ?? null,
+          samples: sampleRows.filter((s) => s.positionPk === p.publicKey.toBase58()),
+          now,
         }),
       );
     }
@@ -128,8 +160,10 @@ function buildView(args: {
   data: PositionData;
   activeBinId: number;
   managed: ManagedPosition | null;
+  samples: PnlSample[];
+  now: number;
 }): PositionView {
-  const { pool, meta, data, activeBinId, managed, pnl } = args;
+  const { pool, meta, data, activeBinId, managed, pnl, samples, now } = args;
 
   const decimalsX = pool.tokenX.mint.decimals;
   const decimalsY = pool.tokenY.mint.decimals;
@@ -214,5 +248,51 @@ function buildView(args: {
           allTimeFeesUsd: Number(pnl.allTimeFees?.total?.usd ?? 0),
         }
       : null,
+
+    feeRate: buildFeeRate({
+      samples,
+      valueUsd: value.amountX * priceUsdX + value.amountY * priceUsdY,
+      allTimeFeesUsd: Number(pnl?.allTimeFees?.total?.usd ?? 0),
+      openedAt: managed?.openedAt,
+      meta,
+      now,
+    }),
+  };
+}
+
+/**
+ * Prefers what the position actually earned over what it earned on average.
+ *
+ * The realized figure needs sampled history, which a fresh install does not have —
+ * the Data API has no historical endpoint, so nothing can backfill it. Until then
+ * the lifetime average from the indexer's all-time fees stands in, labelled as such
+ * so a reading measured over three days is never presented as a 24h rate.
+ */
+function buildFeeRate(args: {
+  samples: PnlSample[];
+  valueUsd: number;
+  allTimeFeesUsd: number;
+  openedAt?: number;
+  meta: DataApiPool | null;
+  now: number;
+}): PositionView["feeRate"] {
+  const { samples, valueUsd, allTimeFeesUsd, openedAt, meta, now } = args;
+  const windowed = samples.filter((s) => s.ts >= now - RATE_WINDOW_MS);
+  const realized = realizedFeeRate(windowed, valueUsd);
+  const position =
+    realized && realized.hours >= MIN_REALIZED_HOURS
+      ? realized
+      : openedAt !== undefined
+        ? sinceOpenFeeRate(allTimeFeesUsd, valueUsd, openedAt, now)
+        : realized;
+
+  // Verified against a live response: fees["24h"] / tvl reproduces this exactly, so
+  // it is already a PERCENT per 24 hours and directly comparable to the above.
+  const poolRatio = meta?.fee_tvl_ratio?.["24h"];
+
+  return {
+    position,
+    poolPctPer24h: typeof poolRatio === "number" && Number.isFinite(poolRatio) ? poolRatio : null,
+    trend: feeRateSeries(windowed, valueUsd, RATE_BUCKET_MS),
   };
 }

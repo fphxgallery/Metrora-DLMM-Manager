@@ -55,6 +55,95 @@ export function isChurning(medianGapMin: number | null, cooldownMin: number): bo
   return medianGapMin <= Math.max(cooldownMin * 1.5, 5);
 }
 
+/**
+ * A position's fee income expressed as a rate: percent of position value per 24h.
+ *
+ * The comparable figure is the pool's own `fee_tvl_ratio["24h"]`, which is also a
+ * percent per 24 hours (verified against a live response: fees24h / tvl reproduces
+ * it exactly). Above the pool's rate means the range is concentrated where the
+ * volume is; below it means the position is earning less than a passive LP in the
+ * same pool would, while still paying rebalance costs.
+ */
+export interface FeeRate {
+  pctPer24h: number;
+  /** Hours the figure was actually measured over — a 6h reading is not a 24h one. */
+  hours: number;
+  /**
+   * `realized` is what this position genuinely earned over the sampled window.
+   * `since-open` is a lifetime average, used until there is enough history; it
+   * understates a position that has lately been in range, because it averages in
+   * every period the position sat outside it.
+   */
+  basis: "realized" | "since-open";
+}
+
+/** Under a quarter of an hour of history, the rate is noise scaled by 96. */
+const MIN_RATE_HOURS = 0.25;
+
+/**
+ * Fee rate from the sample log: what this position actually earned, annualised to
+ * a 24h figure from however long was sampled.
+ *
+ * Uses the CURRENT position value as the denominator rather than its value at each
+ * sample, which is an approximation — the position's value moves with price. It is
+ * the same approximation the pool-wide ratio makes, so the two stay comparable.
+ */
+export function realizedFeeRate(
+  samples: { ts: number; feesUsd: number }[],
+  valueUsd: number,
+): FeeRate | null {
+  if (!(valueUsd > 0) || samples.length < 2) return null;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const hours = (last.ts - first.ts) / 3_600_000;
+  if (hours < MIN_RATE_HOURS) return null;
+  const earned = last.feesUsd - first.feesUsd;
+  // allTimeFees counts claimed fees too, so it only ever rises. A fall means the
+  // indexer disagreed with itself, and scaling a negative delta by 24/hours would
+  // report a confident negative yield.
+  if (earned < 0) return null;
+  return { pctPer24h: (earned / valueUsd) * (24 / hours) * 100, hours, basis: "realized" };
+}
+
+/** Lifetime average, for a position with too little sampled history to measure. */
+export function sinceOpenFeeRate(
+  allTimeFeesUsd: number,
+  valueUsd: number,
+  openedAt: number,
+  now: number,
+): FeeRate | null {
+  if (!(valueUsd > 0) || !(allTimeFeesUsd >= 0)) return null;
+  const hours = (now - openedAt) / 3_600_000;
+  if (hours < MIN_RATE_HOURS) return null;
+  return { pctPer24h: (allTimeFeesUsd / valueUsd) * (24 / hours) * 100, hours, basis: "since-open" };
+}
+
+/**
+ * The rate over successive buckets, for a trend line.
+ *
+ * Each point is its own bucket's rate, not a running total — a cumulative curve
+ * looks like a rate but is not one, and reading its height instead of its slope
+ * gets the answer wrong. Buckets shorter than the sample interval would alternate
+ * between one sample and none, so the caller picks the width.
+ */
+export function feeRateSeries(
+  samples: { ts: number; feesUsd: number }[],
+  valueUsd: number,
+  bucketMs: number,
+): number[] {
+  if (!(valueUsd > 0) || samples.length < 2 || bucketMs <= 0) return [];
+  const out: number[] = [];
+  let anchor = samples[0];
+  for (const s of samples) {
+    const span = s.ts - anchor.ts;
+    if (span < bucketMs) continue;
+    const earned = Math.max(0, s.feesUsd - anchor.feesUsd);
+    out.push((earned / valueUsd) * (24 / (span / 3_600_000)) * 100);
+    anchor = s;
+  }
+  return out;
+}
+
 /** Total lamports a set of rebalances consumed: network + priority fees, plus sunk bin-array rent. */
 export function lamportsOf(rs: RebalanceRecord[]): number {
   return rs.reduce((a, r) => a + r.costLamports + r.rentLamports, 0);

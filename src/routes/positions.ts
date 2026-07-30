@@ -8,13 +8,13 @@ import { STRATEGY_TYPES, type StrategyTypeName } from "../config.js";
 import type { AppContext } from "../types.js";
 
 export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, rebalanceDeps: RebalanceDeps): void {
-  const { cfg, client, dataApi, sender, store, log } = ctx;
+  const { cfg, client, dataApi, sender, store, samples, log } = ctx;
   const actions: ActionDeps = { cfg, client, dataApi, sender, store, log };
 
   app.get("/api/positions", async (_req, reply) => {
     try {
       const wallet = client.wallet();
-      const positions = await listPositions({ cfg, client, dataApi, store, log });
+      const positions = await listPositions({ cfg, client, dataApi, store, samples, log });
       return {
         wallet: wallet?.publicKey.toBase58() ?? null,
         solBalance: await client.solBalance(),
