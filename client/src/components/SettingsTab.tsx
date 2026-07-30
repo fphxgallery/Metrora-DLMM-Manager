@@ -29,6 +29,16 @@ const NUMERIC_FIELDS: { key: string; label: string; hint: string }[] = [
   { key: "PRIORITY_FEE_MICROLAMPORTS", label: "Priority fee (µlamports/CU)", hint: "Raise if transactions fail to confirm under congestion." },
   { key: "COMPUTE_UNIT_LIMIT", label: "Compute unit limit", hint: "Bin-array init and rebalance are compute-heavy." },
   { key: "MIN_SOL_BALANCE", label: "Min SOL balance", hint: "Refuse to act below this, so fees and rent stay payable." },
+  {
+    key: "MIN_QUOTE_BALANCE_USD",
+    label: "Quote buffer floor ($)",
+    hint: "Idle quote token kept in the wallet to cover the rebalance instruction's rounding shortfall — an empty ATA turns cents of shortfall into a failed rebalance. 0 disables the check.",
+  },
+  {
+    key: "MAX_TOPUP_USD",
+    label: "Max top-up ($)",
+    hint: "Ceiling on a single automatic top-up. Must be at least the floor. MIN_SOL_BALANCE is never spent to fund one.",
+  },
 ];
 
 export function SettingsTab({ onChanged }: { onChanged: () => void }) {
@@ -45,6 +55,7 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
     const f: Record<string, string> = {};
     for (const { key } of NUMERIC_FIELDS) f[key] = String(s.config[key] ?? "");
     f.STRATEGY_TYPE = String(s.config.STRATEGY_TYPE ?? "Spot");
+    f.AUTO_TOPUP = s.config.AUTO_TOPUP ? "true" : "false";
     setForm(f);
   }
 
@@ -117,6 +128,18 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
                 </option>
               ))}
             </select>
+          </label>
+          <label className="field">
+            <span>Auto top-up</span>
+            {/* A select, not a text box: the parser treats anything that isn't
+                1/true/yes/on as false, so a typo would silently disable it. */}
+            <select value={form.AUTO_TOPUP ?? "true"} onChange={(e) => setForm({ ...form, AUTO_TOPUP: e.target.value })}>
+              <option value="true">ON — swap SOL to refill the buffer</option>
+              <option value="false">OFF — warn instead</option>
+            </select>
+            <span className="faint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
+              With it off, a dry buffer is a log line and a Telegram alert; the rebalance still proceeds either way.
+            </span>
           </label>
           {NUMERIC_FIELDS.map((f) => (
             <label className="field" key={f.key}>

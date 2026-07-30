@@ -14,7 +14,8 @@ spending more on rebalancing than the position can earn.
   a position is beating a passive LP in the same pool
 - Open / add / claim / exit positions from the browser
 - Automatic rebalancing with cooldown, edge-buffer and cost guards
-- Hot wallet created or imported in the UI (or from a CLI)
+- Hot wallet created or imported in the UI (or from a CLI), with every token balance priced and
+  empty token accounts closable to reclaim their rent
 - Cost-vs-fees charts over 24h / 7d / 30d / 90d / all time, so "does this pay?" has an answer
 - Crash-safe: a rebalance interrupted mid-sequence is resolved in-run, not at the next restart
 
@@ -98,8 +99,9 @@ at the top of the **METRICS** tab.
 
 ## Configuration
 
-All of `.env`; the rebalance thresholds are also editable from the SETTINGS tab, which validates a
-value before it is written (a bad value is rejected, never persisted).
+All of `.env`; the rebalance thresholds, the wallet buffer and `MIN_SOL_BALANCE` are also editable
+from the SETTINGS tab, which validates a value before it is written (a bad value is rejected, never
+persisted — including self-contradictory pairs like a `MAX_TOPUP_USD` below the floor).
 
 | Key | Default | What it does |
 |---|---|---|
@@ -328,6 +330,32 @@ npm run wallet -- show
 
 The same operations are in the SETTINGS tab when `ENABLE_WALLET_UI=true`, which additionally
 requires `API_TOKEN` to be set and a valid bearer token on the request.
+
+### What the wallet holds, and reclaiming rent
+
+The wallet bar on POSITIONS lists every balance as a chip — SOL plus each SPL and Token-2022 token,
+priced through Jupiter. A mint Jupiter has never seen still lists, with its balance and no USD
+figure: an unknown airdrop may be exactly the thing holding an account open.
+
+Behind the expander is the account view. A Solana token account is not free — it holds a
+rent-exempt deposit that is returned in full when the account is closed. Airdrops, one-off swaps and
+closed positions leave empty accounts behind, and each is a small amount of SOL sitting idle.
+Selecting them and pressing CLAIM RENT closes them in one transaction.
+
+The rent shown per row is the account's **own** lamport balance, not a constant — a Token-2022
+account with extensions holds more than the 0.00203928 SOL of a standard one, and closing returns
+what is actually there.
+
+Two accounts are never closable:
+
+- **Anything holding a balance.** The exception is wrapped SOL, which closes to native SOL in the
+  same wallet — that is how left-over wSOL from an interrupted rebalance is recovered, and the row
+  is tagged `UNWRAPS TO SOL` rather than `CLOSABLE`.
+- **Either token of a managed position's pool**, even when empty. The rebalance path re-creates
+  those accounts, so closing one reclaims rent that the next rebalance immediately pays again. This
+  includes the quote-token buffer above. The checkbox is disabled, and the endpoint re-reads chain
+  state and re-classifies every address before it touches one — a stale tab cannot close an account
+  that has since been funded or adopted by a new position.
 
 ## Security
 

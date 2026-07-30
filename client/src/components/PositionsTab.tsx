@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Settings } from "../api.ts";
 import { fmtAgo, fmtAmount, fmtNum, fmtPct, fmtPrice, fmtUsd, shortPk } from "../format.ts";
+import { WalletPanel } from "./WalletPanel.tsx";
 
 export interface PositionView {
   positionPk: string;
@@ -93,19 +94,7 @@ export function PositionsTab() {
     <>
       {error && <div className="msg err">{error}</div>}
 
-      <div className="panel">
-        <div className="row" style={{ justifyContent: "space-between" }}>
-          <div className="row" style={{ gap: 16 }}>
-            <span className="faint">wallet</span>
-            <span>{data?.wallet ? shortPk(data.wallet) : <span className="warn">none — create one in SETTINGS</span>}</span>
-            <span className="faint">SOL</span>
-            <span>{fmtAmount(data?.solBalance)}</span>
-          </div>
-          <button className="btn" disabled={busy} onClick={() => void load()}>
-            {busy ? "…" : "REFRESH"}
-          </button>
-        </div>
-      </div>
+      <WalletPanel wallet={data?.wallet} solBalance={data?.solBalance} onRefresh={load} />
 
       {data && data.positions.length === 0 && (
         <div className="panel faint">

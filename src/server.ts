@@ -40,6 +40,7 @@ const TIMEFRAMES: Record<string, number> = {
 const MAX_POINTS = 320;
 import { registerPoolRoutes } from "./routes/pools.js";
 import { registerPositionRoutes } from "./routes/positions.js";
+import { registerWalletTokenRoutes } from "./routes/wallet.js";
 import { isAutoRebalance, isDryRun, type AppContext } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -74,6 +75,9 @@ const EDITABLE_KEYS = new Set([
   "PRIORITY_FEE_MICROLAMPORTS",
   "COMPUTE_UNIT_LIMIT",
   "MIN_SOL_BALANCE",
+  "MIN_QUOTE_BALANCE_USD",
+  "AUTO_TOPUP",
+  "MAX_TOPUP_USD",
   // POLL_INTERVAL_MS is deliberately absent: the engine captures it once into
   // setInterval, so editing it here would not take effect until a restart anyway.
 ]);
@@ -299,6 +303,7 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
 
   registerPoolRoutes(app, ctx);
   registerPositionRoutes(app, ctx, rebalanceDeps);
+  registerWalletTokenRoutes(app, ctx);
 
   // ---------------------------------------------------------------- logs ----
 
@@ -341,6 +346,9 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       PRIORITY_FEE_MICROLAMPORTS: cfg.priorityFeeMicroLamports,
       COMPUTE_UNIT_LIMIT: cfg.computeUnitLimit,
       MIN_SOL_BALANCE: cfg.minSolBalance,
+      MIN_QUOTE_BALANCE_USD: cfg.minQuoteBalanceUsd,
+      AUTO_TOPUP: cfg.autoTopUp,
+      MAX_TOPUP_USD: cfg.maxTopUpUsd,
       POLL_INTERVAL_MS: cfg.pollIntervalMs,
       DRY_RUN: isDryRun(ctx),
       CLUSTER: cfg.cluster,
