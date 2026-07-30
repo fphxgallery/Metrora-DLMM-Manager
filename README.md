@@ -202,8 +202,12 @@ cluster of ticks against a flat fee line is the churn signal.
 
 PnL including price movement sits under that chart, sharing its x-axis but keeping **its own y-scale**.
 Impermanent loss dwarfs fee income, so putting both on one axis would flatten the fee signal into
-noise. Every figure in the tile row below belongs to the selected window; the numbers on the position
-line below that belong to the position, whatever window is showing.
+noise. Its current value is repeated at the end of the legend, since it is the one figure the two
+lines above cannot give you: fees and cost say what the automation *did*, PnL says what the position
+was worth having done.
+
+Every figure in the tile row below belongs to the selected window; the numbers on the position line
+below that belong to the position, whatever window is showing.
 
 Rent is counted in cost. The rent a rebalance pays is for **bin arrays**, which are pool-owned, shared
 between every LP in the pool, and have no close instruction — that lamport never comes back. Position
