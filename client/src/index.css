@@ -257,6 +257,202 @@ label.field > span {
 .muted {
   color: var(--text-dim);
 }
+/* ---- charts ---------------------------------------------------------------- */
+
+/* A panel heading with controls pushed to the right of it. */
+.panel-hd {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.panel-hd h2 {
+  margin: 0;
+}
+.panel-hd > :last-child {
+  margin-left: auto;
+}
+
+.pills-row {
+  display: flex;
+  gap: 4px;
+}
+
+button.pill-btn {
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+button.pill-btn:hover {
+  color: var(--text);
+  border-color: var(--border-hot);
+}
+button.pill-btn[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: rgba(56, 225, 255, 0.08);
+}
+
+/* The one-line answer above the chart that the chart then explains. */
+.verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 6px;
+}
+.verdict b {
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.chart-wrap {
+  position: relative;
+}
+.chart-wrap svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.grid {
+  stroke: #1a2330;
+  stroke-width: 1;
+}
+.zero {
+  stroke: var(--border-hot);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.crosshair {
+  stroke: var(--border-hot);
+  stroke-width: 1;
+}
+.axis {
+  fill: var(--text-faint);
+  font-size: 9px;
+}
+
+.line-fee {
+  fill: none;
+  stroke: var(--good);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.fill-fee {
+  fill: rgba(52, 211, 153, 0.09);
+  stroke: none;
+}
+.line-cost {
+  fill: none;
+  stroke: var(--bad);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.line-pnl {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+/* A surface-coloured ring keeps the end dot readable where the two lines meet. */
+.dot-fee,
+.dot-cost,
+.dot-pnl {
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+.dot-fee {
+  fill: var(--good);
+}
+.dot-cost {
+  fill: var(--bad);
+}
+.dot-pnl {
+  fill: var(--accent);
+}
+.cross-mark {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.event-ticks line {
+  stroke: #3a475a;
+  stroke-width: 2;
+}
+
+.chart-tip {
+  position: absolute;
+  top: 4px;
+  pointer-events: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border-hot);
+  border-radius: 4px;
+  padding: 7px 9px;
+  font-size: 10px;
+  line-height: 1.65;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  max-width: 46%;
+}
+.chart-tip .tip-k {
+  display: inline-block;
+  width: 44px;
+  color: var(--text-dim);
+}
+
+.chart-legend {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 9px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.chart-legend b {
+  font-weight: 400;
+  color: var(--text);
+}
+.chart-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 2px;
+  vertical-align: middle;
+  margin-right: 5px;
+}
+.chart-legend .sw-fee {
+  background: var(--good);
+}
+.chart-legend .sw-cost {
+  background: var(--bad);
+}
+.chart-legend .sw-event {
+  width: 2px;
+  height: 9px;
+  background: #3a475a;
+}
+.chart-legend .legend-end {
+  margin-left: auto;
+}
+
+.empty-chart {
+  border: 1px dashed var(--border-hot);
+  border-radius: 5px;
+  padding: 22px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
 /* An explanatory footnote under a panel's tiles — why a figure excludes something. */
 .note {
   margin: 14px 0 0;

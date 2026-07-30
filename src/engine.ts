@@ -98,6 +98,11 @@ export class Engine {
       const positions = this.ctx.store.positions();
       if (positions.length === 0) return;
 
+      // Writes a PnL reading when the sample interval has elapsed, and returns
+      // immediately otherwise. Ahead of the rebalance loop so a sample still lands
+      // on a tick where evaluating a position throws.
+      await this.ctx.sampler.maybeSample();
+
       for (const managed of positions) {
         try {
           await this.evaluateAndAct(managed);

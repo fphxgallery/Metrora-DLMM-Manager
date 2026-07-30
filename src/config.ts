@@ -37,6 +37,12 @@ export interface Config {
   dataApiUrl: string;
   dataApiCacheMs: number;
 
+  // --- pnl history ---
+  /** How often each managed position's PnL is written to the sample log. */
+  sampleIntervalMin: number;
+  /** How much sample history to keep. Older rows are pruned at boot. */
+  sampleRetentionDays: number;
+
   // --- default position shape ---
   /** Half-width of a new position in bins: range = [active - N, active + N]. */
   rangeBins: number;
@@ -105,6 +111,12 @@ export function loadConfig(): Config {
 
     dataApiUrl: str("DATA_API_URL", "https://dlmm.datapi.meteora.ag"),
     dataApiCacheMs: num("DATA_API_CACHE_MS", 10_000),
+
+    // 15 minutes gives 96 readings a day — a dense 24h chart at ~8,600 rows per
+    // position over the 90-day window, which is nothing as an appended log and
+    // would be unworkable inside state.json.
+    sampleIntervalMin: num("SAMPLE_INTERVAL_MIN", 15),
+    sampleRetentionDays: num("SAMPLE_RETENTION_DAYS", 90),
 
     // Defaults are tuned for a bin-step-4 major pair (SOL-USDC): ±60 bins is
     // ±2.4%, which covers that pair's ~3% median daily range. See DEFAULTS_NOTE.
@@ -175,6 +187,12 @@ function validate(cfg: Config): void {
     );
   }
   if (cfg.cooldownMin < 0) throw new Error(`COOLDOWN_MIN must be >= 0 (got ${cfg.cooldownMin})`);
+  if (cfg.sampleIntervalMin <= 0) {
+    throw new Error(`SAMPLE_INTERVAL_MIN must be > 0 (got ${cfg.sampleIntervalMin})`);
+  }
+  if (cfg.sampleRetentionDays <= 0) {
+    throw new Error(`SAMPLE_RETENTION_DAYS must be > 0 (got ${cfg.sampleRetentionDays})`);
+  }
   if (cfg.minFeeCoverRatio < 0) throw new Error(`MIN_FEE_COVER_RATIO must be >= 0 (got ${cfg.minFeeCoverRatio})`);
   if (cfg.ratioToleranceBps < 0 || cfg.ratioToleranceBps > 10_000) {
     throw new Error(`RATIO_TOLERANCE_BPS must be in [0,10000] (got ${cfg.ratioToleranceBps})`);

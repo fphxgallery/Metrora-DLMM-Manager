@@ -4,6 +4,8 @@ import type { Logger } from "./logger.js";
 import type { DataApi } from "./meteora/datapi.js";
 import type { MeteoraClient } from "./meteora/client.js";
 import type { Notifier } from "./notify.js";
+import type { SampleLog } from "./history.js";
+import type { Sampler } from "./sampler.js";
 import type { Store } from "./state.js";
 import type { TxSender } from "./tx/send.js";
 
@@ -20,6 +22,9 @@ export interface AppContext {
   client: MeteoraClient;
   dataApi: DataApi;
   sender: TxSender;
+  /** PnL readings taken over time — the only source of history for the charts. */
+  samples: SampleLog;
+  sampler: Sampler;
   /** Absolute/relative path to the .env this instance persists settings into. */
   envPath: string;
   /** Re-reads .env and applies it to `cfg` in place. */

@@ -9,3 +9,4 @@ secrets/
 *.log
 .DS_Store
 *.tsbuildinfo
+.claude/

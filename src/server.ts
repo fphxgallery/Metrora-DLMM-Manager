@@ -18,6 +18,18 @@ import {
 } from "./wallet/keystore.js";
 import type { RebalanceDeps } from "./meteora/rebalance.js";
 import { lamportsOf, partitionRebalances } from "./metrics.js";
+import { aggregateByTs, downsample } from "./history.js";
+
+/** Chart windows offered by the METRICS tab, in milliseconds. */
+const TIMEFRAMES: Record<string, number> = {
+  "24H": 86_400_000,
+  "7D": 7 * 86_400_000,
+  "30D": 30 * 86_400_000,
+  "90D": 90 * 86_400_000,
+};
+
+/** Points per series in a history response — more than a chart can resolve is waste. */
+const MAX_POINTS = 320;
 import { registerPoolRoutes } from "./routes/pools.js";
 import { registerPositionRoutes } from "./routes/positions.js";
 import { isAutoRebalance, isDryRun, type AppContext } from "./types.js";
@@ -191,6 +203,65 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
         lastRebalanceAt: p.lastRebalanceAt,
         timeInRangePct: p.pollsTotal > 0 ? (p.pollsInRange / p.pollsTotal) * 100 : null,
       })),
+    };
+  });
+
+  /**
+   * Time series behind the METRICS charts.
+   *
+   * Fees and PnL come from the sample log, which only holds what was actually
+   * recorded — so a window longer than the history returns `enough: false` and the
+   * client shows what it is still collecting rather than drawing a line through
+   * absent data. Cost is different: `rebalances[]` already carries a timestamp per
+   * record, so the cost curve is exact right back to the first rebalance without
+   * ever having been sampled.
+   */
+  app.get("/api/history", async (req) => {
+    const tf = String((req.query as { tf?: string }).tf ?? "24H").toUpperCase();
+    const spanMs = TIMEFRAMES[tf] ?? TIMEFRAMES["24H"];
+    const now = Date.now();
+    const from = now - spanMs;
+
+    const positions = store.positions();
+    const managedPks = new Set(positions.map((p) => p.positionPk));
+    const solPriceUsd = await ctx.dataApi.solPriceUsd().catch(() => 0);
+
+    // Same rule as /api/metrics: only positions still managed, so cost and fees
+    // describe one set of positions.
+    const rows = ctx.samples.read(from).filter((s) => managedPks.has(s.positionPk));
+    const fees = downsample(aggregateByTs(rows, (s) => s.feesUsd), MAX_POINTS);
+    const pnl = downsample(aggregateByTs(rows, (s) => s.pnlUsd), MAX_POINTS);
+
+    const { managed: rebalances } = partitionRebalances(store.rebalances(), positions);
+    const ordered = [...rebalances].sort((a, b) => a.ts - b.ts);
+    let running = 0;
+    const cost: { ts: number; usd: number }[] = [];
+    for (const r of ordered) {
+      running += (r.costLamports + r.rentLamports) / 1_000_000_000;
+      if (r.ts >= from) cost.push({ ts: r.ts, usd: running * solPriceUsd });
+    }
+    // Anchor the step at the window's left edge, otherwise a cost curve whose
+    // rebalances all predate the window would start at zero and understate it.
+    const spentBefore = ordered
+      .filter((r) => r.ts < from)
+      .reduce((a, r) => a + (r.costLamports + r.rentLamports) / 1_000_000_000, 0);
+    cost.unshift({ ts: from, usd: spentBefore * solPriceUsd });
+    cost.push({ ts: now, usd: running * solPriceUsd });
+
+    const earliest = ctx.samples.earliest();
+    return {
+      tf,
+      from,
+      to: now,
+      /** False when the sample log does not reach back to the start of the window. */
+      enough: earliest !== undefined && earliest <= from + ctx.cfg.sampleIntervalMin * 60_000,
+      collectingSince: earliest ?? null,
+      sampleIntervalMin: ctx.cfg.sampleIntervalMin,
+      fees,
+      pnl,
+      cost,
+      /** When each rebalance landed, for the ticks under the axis. */
+      events: rebalances.filter((r) => r.ts >= from).map((r) => r.ts),
     };
   });
 

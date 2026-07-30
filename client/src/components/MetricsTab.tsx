@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api.ts";
 import { fmtAgo, fmtNum, fmtPct, fmtUsd, shortPk } from "../format.ts";
+import { HistoryCharts } from "./HistoryCharts.tsx";
 
 interface RebalanceRecord {
   ts: number;
@@ -123,10 +124,12 @@ export function MetricsTab() {
         </div>
       )}
 
+      <HistoryCharts />
+
       <div className="panel">
-        <h2>Does the automation pay?</h2>
+        <h2>All time</h2>
         <div className="tiles">
-          <Tile label="Fees earned" value={fmtUsd(m.feesEarnedUsd)} sub="all time, managed positions" cls="good" />
+          <Tile label="Fees earned" value={fmtUsd(m.feesEarnedUsd)} sub="managed positions" cls="good" />
           <Tile
             label="Rebalance cost"
             value={fmtUsd(m.costUsd)}

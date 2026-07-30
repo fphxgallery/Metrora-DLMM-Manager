@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { loadConfig } from "./config.js";
 import { logger } from "./logger.js";
 import { Store } from "./state.js";
+import { SampleLog } from "./history.js";
+import { Sampler } from "./sampler.js";
 import { Notifier } from "./notify.js";
 import { DataApi } from "./meteora/datapi.js";
 import { MeteoraClient } from "./meteora/client.js";
@@ -21,10 +23,22 @@ async function main(): Promise<void> {
 
   const client = new MeteoraClient(cfg, log);
   const dataApi = new DataApi(cfg, log);
+  const samples = new SampleLog(cfg.dataDir);
+  const pruned = samples.prune(cfg.sampleRetentionDays * 86_400_000);
+  if (pruned > 0) log.info({ pruned, retentionDays: cfg.sampleRetentionDays }, "pruned old pnl samples");
   const swapper = new JupiterSwap(cfg, log);
   // The dry-run flag is read through a closure, not captured, so toggling it in
   // the UI takes effect on the very next transaction.
   const sender = new TxSender(cfg, client.connection, log, () => store.get().dryRunOverride ?? cfg.dryRun);
+
+  const sampler = new Sampler({
+    store,
+    dataApi,
+    client,
+    samples,
+    log,
+    intervalMs: cfg.sampleIntervalMin * 60_000,
+  });
 
   const ctx: AppContext = {
     cfg,
@@ -34,6 +48,8 @@ async function main(): Promise<void> {
     client,
     dataApi,
     sender,
+    samples,
+    sampler,
     envPath,
     reloadFromEnv: makeReload(cfg, envPath),
   };
