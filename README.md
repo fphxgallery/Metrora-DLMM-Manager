@@ -208,31 +208,36 @@ between every LP in the pool, and have no close instruction — that lamport nev
 
 ### Is this position beating the pool?
 
-Each position card carries a fee/TVL rate: fee income as a percent of position value
-per 24 hours, next to the same figure for the pool it sits in.
+Each position card carries a **Fee / TVL · 24h** tile: fee income as a percent of
+position value per 24 hours, with the pool's own rate marked as a tick on the bar
+beneath it. The fill is this position; the tick is the pool.
 
 The comparison is the point. A rate on its own says nothing — 0.4% a day is
 excellent in one pool and poor in another. Against the pool's own rate it becomes a
-verdict. **Above** means the range is concentrated where the volume is, which is
-what a managed position is for. **Below** means the position is earning less than a
-passive LP in the same pool would, while still paying to rebalance — the one failure
-this app can actively cause, and previously the tab gave you no way to see it.
+verdict. **Past the tick** means the range is concentrated where the volume is,
+which is what a managed position is for. **Short of the tick**, drawn amber, means
+the position is earning less than a passive LP in the same pool would while still
+paying to rebalance — the one failure this app can actively cause, and otherwise
+invisible.
 
-The position's figure is measured, not estimated: the sample log already records
-all-time fees per position, so the rate is what the position genuinely earned over
-the sampled window, scaled to 24 hours. Before an hour of history exists it falls
-back to the lifetime average from the indexer's all-time fees. **The label always
-names what was actually measured** — `24h`, `6h`, `since open`, or `pool fee / TVL`
-when there is nothing position-specific yet. A six-hour reading is never presented
-as a 24-hour rate, and the pool's rate is never presented as yours.
+Both numbers come from Meteora's indexer: `feePerTvl24h` on the position, and
+`fee_tvl_ratio["24h"]` on the pool. Both are percents per 24 hours, verified against
+a live response rather than assumed — `fees["24h"] / tvl` reproduces the pool figure
+exactly.
 
-The sparkline is each hour's own rate, not a running total, so its slope is the
-trend. A falling line while the price sits inside your range means volume has moved
-elsewhere in the pool.
+Note what the position figure is: the indexer's **estimate** of a 24h rate, not a
+measurement over 24 hours. A position eight hours old still reports one.
 
-> One API note, since it is easy to get wrong: the Data API's `apr` field is
-> byte-identical to `fee_tvl_ratio["24h"]` — a **daily** percent, not an annualised
-> one. This app exposes it as `feeTvlDailyPct` for that reason.
+Labels stay honest about which number you are looking at. When the indexer has no
+rate for the position, the tile falls back to the pool's and says so — `Pool fee /
+TVL · 24h` — and a position the indexer has not seen at all reads `—`, never `0%`.
+
+> Two API notes, both easy to get wrong. The `apr` field is byte-identical to
+> `fee_tvl_ratio["24h"]`: a **daily** percent, not an annualised one, which is why
+> this app exposes it as `feeTvlDailyPct`. And `allTimeFees` does **not** accrue
+> continuously — on a live position, 20 of 23 fifteen-minute samples moved by
+> exactly zero while it was in range throughout. Differencing that field to build a
+> rate measures when the indexer updated, not what the position earned.
 
 ### The churn signal
 
