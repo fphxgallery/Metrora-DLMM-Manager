@@ -170,14 +170,13 @@ export function MetricsTab() {
           <Tile
             label="Median gap"
             value={m.medianGapMin == null ? "—" : `${fmtNum(m.medianGapMin)}m`}
-            sub={m.minGapMin == null ? "no repeats yet" : `shortest ${fmtNum(m.minGapMin)}m`}
+            // The shortest gap is the sharper churn reading, so it stays visible
+            // next to the value now that the guidance occupies the sub slot.
+            valueNote={m.minGapMin == null ? undefined : `shortest ${fmtNum(m.minGapMin)}m`}
+            sub="Raise COOLDOWN_MIN or widen RANGE_BINS."
             cls={m.minGapMin != null && m.minGapMin < 5 ? "warn" : undefined}
           />
           <Tile label="Managed" value={fmtNum(m.managed)} sub={`${m.autoManaged} on auto`} />
-        </div>
-        <div className="faint" style={{ marginTop: 10 }}>
-          A short median gap is the churn signal: it means the position keeps leaving its range right after being
-          re-centred. Raise COOLDOWN_MIN or widen RANGE_BINS.
         </div>
       </div>
 
@@ -255,11 +254,27 @@ export function MetricsTab() {
   );
 }
 
-function Tile({ label, value, sub, cls }: { label: string; value: string; sub?: string; cls?: string }) {
+function Tile({
+  label,
+  value,
+  valueNote,
+  sub,
+  cls,
+}: {
+  label: string;
+  value: string;
+  /** A secondary figure kept on the value line, for tiles whose sub carries prose. */
+  valueNote?: string;
+  sub?: string;
+  cls?: string;
+}) {
   return (
     <div className="tile">
       <div className="label">{label}</div>
-      <div className={`value ${cls ?? ""}`}>{value}</div>
+      <div className={`value ${cls ?? ""}`}>
+        {value}
+        {valueNote && <span className="value-note">{valueNote}</span>}
+      </div>
       {sub && <div className="faint">{sub}</div>}
     </div>
   );
