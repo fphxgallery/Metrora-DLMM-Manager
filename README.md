@@ -120,12 +120,40 @@ value before it is written (a bad value is rejected, never persisted).
 | `PRIORITY_FEE_MICROLAMPORTS` | `50000` | Per-CU price for transactions *we* build. Raise if transactions fail to confirm |
 | `SAMPLE_INTERVAL_MIN` | `15` | How often PnL is recorded for the METRICS charts |
 | `SAMPLE_RETENTION_DAYS` | `90` | How much sample history to keep |
-| `MIN_SOL_BALANCE` | `0.05` | Refuse to act below this, so fees and rent stay payable |
+| `MIN_SOL_BALANCE` | `0.05` | Refuse to act below this, so fees and rent stay payable. Never spent on a top-up |
+| `MIN_QUOTE_BALANCE_USD` | `1` | Quote-token balance to keep idle in the wallet — see below. `0` disables |
+| `AUTO_TOPUP` | `true` | Swap a little SOL to refill that buffer. `false` warns instead |
+| `MAX_TOPUP_USD` | `5` | Ceiling on a single top-up. Must be `>= MIN_QUOTE_BALANCE_USD` |
 | `API_TOKEN` | unset | Bearer token for every mutating endpoint and the login gate |
 | `ENABLE_WALLET_UI` | `false` | Allow creating/importing a key from the browser (needs `API_TOKEN`) |
 
 `DRY_RUN` and `AUTO_REBALANCE` can also be toggled from the UI; those overrides live in
 `data/state.json` so they survive a container rebuild.
+
+### The wallet needs a little of the quote token
+
+Not obvious, and it costs a whole rebalance when it is missing. The rebalance
+instruction settles **rounding shortfalls out of the wallet's token account**: with
+`STRATEGY_TYPE=Curve` the redeposit side can ask for marginally more of a token than
+the withdraw released. Against an empty account that becomes an SPL Token
+`insufficient funds` (0x1) at simulation, and the whole rebalance fails before its
+first transaction is sent — including path B, where the failure is on the *withdraw*
+leg and has nothing to do with the swap that would have followed.
+
+Seen live on a SOL-USDC position whose wallet held no USDC. The shortfall is cents.
+
+So before anything is journalled or sent, the app checks that the wallet holds at
+least `MIN_QUOTE_BALANCE_USD` of the pool's quote token, and with `AUTO_TOPUP` on
+swaps a little SOL to refill it. Refills to twice the floor, so a rebalance that eats
+a few cents does not trigger another top-up on the next tick. With `AUTO_TOPUP=false`
+it warns by log and Telegram and leaves the topping up to you.
+
+`MIN_SOL_BALANCE` is never spent to fund a top-up — that reserve is what keeps fees
+and rent payable, and draining it would trade one empty balance for another. If the
+spendable surplus cannot cover the whole top-up it is refused rather than
+part-filled, since half a buffer is still below the floor and has paid a swap fee for
+it. None of this can block a rebalance: a top-up that cannot be priced or does not
+fill is a warning, and the rebalance proceeds — it may not need the buffer at all.
 
 ### Two defaults that were measured, not guessed
 

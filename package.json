@@ -1,6 +1,6 @@
 {
   "name": "dlmm-manager",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "private": true,
   "description": "Self-hosted manager for Meteora DLMM liquidity positions with automatic rebalancing",
   "type": "module",
