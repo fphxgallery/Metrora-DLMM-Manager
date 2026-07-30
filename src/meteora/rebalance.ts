@@ -6,10 +6,56 @@ import type { Logger } from "../logger.js";
 import type { JournalEntry, Store } from "../state.js";
 import type { DataApi } from "./datapi.js";
 import type { MeteoraClient } from "./client.js";
-import type { TxSender, SendResult } from "../tx/send.js";
+import { TxError, type TxSender, type SendResult } from "../tx/send.js";
 import type { JupiterSwap } from "../swap/jupiter.js";
 import { StrategyType, type DlmmPool, type PositionData } from "./sdk.js";
 import { priceOfBin, toUi, valuePosition } from "./pricing.js";
+
+/**
+ * Jupiter's `SlippageToleranceExceeded`, as it appears in a failed simulation:
+ * "custom program error: 0x1771" (6001).
+ */
+const JUPITER_SLIPPAGE_ERR = "0x1771";
+
+/**
+ * How many times the swap leg will quote before giving up on this tick.
+ *
+ * Observed live: a route quoted at 0bps price impact failed simulation on
+ * slippage, and a re-quote 2m22s later filled immediately on a DIFFERENT route
+ * (AlphaQ -> Quantum). Half a percent of real movement in the 174ms between quote
+ * and simulation is not plausible for a major pair, so the cause is the route
+ * itself — most likely another trade hitting a thin pool inside it. Re-quoting
+ * therefore fixes it, and waiting for the next tick to do that leaves the
+ * withdrawn funds sitting in the wallet for minutes with nothing gained.
+ */
+const SWAP_QUOTE_ATTEMPTS = 3;
+/** Long enough for route state to change, negligible next to a resume cycle. */
+const SWAP_REQUOTE_DELAY_MS = 1_500;
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Whether a failed swap send may be re-quoted and sent again immediately.
+ *
+ * Two conditions, and BOTH matter:
+ *
+ * `would fail` is the message `assertSimulationOk` throws, which happens before
+ * the transaction is broadcast — so it is the only failure we can prove was never
+ * sent. Every other failure has an outcome we do not know: a swap that may have
+ * landed must never be sent a second time, because doing so would swap the
+ * position's funds twice and there is no way to undo it. An expired blockhash or
+ * a confirmation timeout falls here, and is left to resume, which re-reads
+ * on-chain state first.
+ *
+ * And the error has to actually be slippage. A route we cannot afford, a missing
+ * account or a program bug will fail identically on a retry, so retrying only
+ * burns quotes.
+ */
+export function isRequotableSwapFailure(e: unknown): boolean {
+  if (!(e instanceof TxError)) return false;
+  if (!e.message.includes("would fail")) return false;
+  return e.message.includes(JUPITER_SLIPPAGE_ERR) || /slippage/i.test(e.message);
+}
 
 export interface RebalanceDeps {
   cfg: Config;
@@ -381,7 +427,8 @@ async function withdrawAndRecentre(
 }
 
 /** Phase 2 of path B. Returns what actually landed in the wallet. */
-async function runSwapLeg(
+/** Exported for tests: the retry count and what it refuses to retry are the risk here. */
+export async function runSwapLeg(
   deps: RebalanceDeps,
   entry: JournalEntry,
   plan: RebalancePlan,
@@ -393,56 +440,81 @@ async function runSwapLeg(
   const toMint = new PublicKey(plan.swap!.toMint);
   const toProgram = toMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
 
+  // Read once. A re-quoted attempt only happens when the previous one was never
+  // broadcast, so the balance cannot have moved underneath us.
   const before = await client.tokenBalance(toMint, toProgram);
-  const quote = await swapper.quote({
-    inputMint: plan.swap!.fromMint,
-    outputMint: plan.swap!.toMint,
-    amount: amountIn,
-  });
-  log.info(
-    {
-      journalId: entry.id,
-      route: quote.route,
-      in: amountIn.toString(),
-      out: quote.outAmount.toString(),
-      priceImpactBps: quote.priceImpactBps,
-    },
-    "swap quoted",
-  );
+  const label = `swap ${plan.swap!.fromSymbol}->${plan.swap!.toSymbol}`;
 
-  // Refuse a bad route before anything is signed, so this costs a quote and no
-  // fee. Distinct from slippage tolerance: that is movement we accept on a route
-  // already chosen, this is whether the route is worth taking at all. The
-  // withdrawn funds stay in the wallet and the entry is retried on a later tick,
-  // by which point impact may have recovered.
-  if (quote.priceImpactBps > cfg.maxSwapPriceImpactBps) {
-    throw new Error(
-      `swap price impact ${quote.priceImpactBps}bps exceeds MAX_SWAP_PRICE_IMPACT_BPS ` +
-        `(${cfg.maxSwapPriceImpactBps}bps) — refusing the ${plan.swap!.fromSymbol}->` +
-        `${plan.swap!.toSymbol} route. Nothing was sent; the withdrawn funds are in the wallet ` +
-        "and this rebalance is retried automatically.",
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= SWAP_QUOTE_ATTEMPTS; attempt++) {
+    const quote = await swapper.quote({
+      inputMint: plan.swap!.fromMint,
+      outputMint: plan.swap!.toMint,
+      amount: amountIn,
+    });
+    log.info(
+      {
+        journalId: entry.id,
+        route: quote.route,
+        in: amountIn.toString(),
+        out: quote.outAmount.toString(),
+        priceImpactBps: quote.priceImpactBps,
+        ...(attempt > 1 ? { attempt } : {}),
+      },
+      "swap quoted",
     );
+
+    // Refuse a bad route before anything is signed, so this costs a quote and no
+    // fee. Distinct from slippage tolerance: that is movement we accept on a route
+    // already chosen, this is whether the route is worth taking at all. Not
+    // re-quoted either — impact is a property of current liquidity, so an
+    // immediate retry would quote the same wall. The withdrawn funds stay in the
+    // wallet and the entry is retried on a later tick, by which point impact may
+    // have recovered.
+    if (quote.priceImpactBps > cfg.maxSwapPriceImpactBps) {
+      throw new Error(
+        `swap price impact ${quote.priceImpactBps}bps exceeds MAX_SWAP_PRICE_IMPACT_BPS ` +
+          `(${cfg.maxSwapPriceImpactBps}bps) — refusing the ${plan.swap!.fromSymbol}->` +
+          `${plan.swap!.toSymbol} route. Nothing was sent; the withdrawn funds are in the wallet ` +
+          "and this rebalance is retried automatically.",
+      );
+    }
+
+    const tx = await swapper.buildTransaction(quote, wallet);
+    try {
+      const result = await sender.sendVersioned(tx, label);
+      store.updateJournal(entry.id, {
+        swap: {
+          inMint: plan.swap!.fromMint,
+          outMint: plan.swap!.toMint,
+          inAmount: amountIn.toString(),
+          outAmount: quote.outAmount.toString(),
+          sig: result.signature,
+        },
+      });
+
+      if (!result.signature) return { result, received: new BN(0) };
+
+      // Measure rather than trust the quote — the realised output is what matters
+      // to the deposit that follows.
+      const after = await client.tokenBalance(toMint, toProgram);
+      return { result, received: BN.max(new BN(0), after.sub(before)) };
+    } catch (e) {
+      lastErr = e;
+      if (attempt >= SWAP_QUOTE_ATTEMPTS || !isRequotableSwapFailure(e)) throw e;
+      log.warn(
+        {
+          journalId: entry.id,
+          attempt,
+          route: quote.route,
+          err: e instanceof Error ? e.message : String(e),
+        },
+        "swap failed at simulation on slippage — re-quoting",
+      );
+      await delay(SWAP_REQUOTE_DELAY_MS);
+    }
   }
-
-  const tx = await swapper.buildTransaction(quote, wallet);
-  const result = await sender.sendVersioned(tx, `swap ${plan.swap!.fromSymbol}->${plan.swap!.toSymbol}`);
-  store.updateJournal(entry.id, {
-    swap: {
-      inMint: plan.swap!.fromMint,
-      outMint: plan.swap!.toMint,
-      inAmount: amountIn.toString(),
-      outAmount: quote.outAmount.toString(),
-      sig: result.signature,
-    },
-  });
-
-  if (!result.signature) return { result, received: new BN(0) };
-
-  // Measure rather than trust the quote — dynamic slippage means the realised
-  // output is what matters to the deposit that follows.
-  const after = await client.tokenBalance(toMint, toProgram);
-  const received = BN.max(new BN(0), after.sub(before));
-  return { result, received };
+  throw lastErr;
 }
 
 /** Phase 3 of path B: single-sided deposit of the swap proceeds into the new range. */

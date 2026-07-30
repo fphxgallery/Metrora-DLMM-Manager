@@ -71,6 +71,12 @@ mid-instruction, so this runs in three transactions:
 2. **swap** — Jupiter swaps it for the token the new range is short of,
 3. **deposit** — the proceeds go back into the (already re-centred) range.
 
+If the swap fails *at simulation* on slippage — Jupiter error 6001, seen live on a route quoted at
+0bps price impact — it re-quotes immediately, up to three attempts. A fresh quote usually picks a
+different route and fills. Simulation failures are the only ones retried this way: nothing has been
+broadcast at that point, so a retry cannot double-swap. Anything with an unknown outcome (an expired
+blockhash, a confirmation timeout) is left to resume, which re-reads on-chain state first.
+
 Between those steps the funds sit in the wallet. Every step is written to a journal in
 `data/state.json` **before** it is sent, so an interruption leaves a record of exactly where it
 stopped. The app re-reads on-chain and wallet state and finishes the job — it never assumes a
