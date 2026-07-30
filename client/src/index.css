@@ -346,12 +346,6 @@ button.pill-btn[aria-pressed="true"] {
   overflow: visible;
 }
 
-/* The PnL strip follows the legend inside the same panel — without this its
-   in-plot caption crowds the legend row above it. */
-.chart-legend + .chart-wrap {
-  margin-top: 10px;
-}
-
 .grid {
   stroke: #1a2330;
   stroke-width: 1;
@@ -386,16 +380,22 @@ button.pill-btn[aria-pressed="true"] {
   stroke-width: 2;
   stroke-linejoin: round;
 }
-.line-pnl {
+/* PnL rides the same axis as fees and cost, drawn as a recessive band behind them:
+   context for the fee story, not a peer of it. Thinner and dimmer on purpose — at
+   full weight it wins the panel, and the panel's question is about fees vs cost. */
+.fill-pnl {
+  fill: rgba(56, 225, 255, 0.13);
+  stroke: none;
+}
+.line-pnl-band {
   fill: none;
-  stroke: var(--accent);
-  stroke-width: 2;
+  stroke: rgba(56, 225, 255, 0.55);
+  stroke-width: 1.5;
   stroke-linejoin: round;
 }
 /* A surface-coloured ring keeps the end dot readable where the two lines meet. */
 .dot-fee,
-.dot-cost,
-.dot-pnl {
+.dot-cost {
   stroke: var(--panel);
   stroke-width: 2;
 }
@@ -404,9 +404,6 @@ button.pill-btn[aria-pressed="true"] {
 }
 .dot-cost {
   fill: var(--bad);
-}
-.dot-pnl {
-  fill: var(--accent);
 }
 .event-ticks line {
   stroke: #3a475a;

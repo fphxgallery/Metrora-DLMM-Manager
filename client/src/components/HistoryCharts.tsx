@@ -48,13 +48,15 @@ const TOP = 14;
  * choose. Snapping the step to 1/2/5 × a power of ten keeps the labels readable
  * whether the axis spans cents or hundreds of dollars.
  */
-function niceTicks(max: number, count = 4): number[] {
-  if (!(max > 0)) return [0];
-  const raw = max / count;
+function niceTicks(lo: number, hi: number, count = 4): number[] {
+  if (!(hi > lo)) return [0];
+  const raw = (hi - lo) / count;
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
-  const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? 10 * mag;
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? 10 * mag;
   const out: number[] = [];
-  for (let v = 0; v <= max + step / 2; v += step) out.push(Number(v.toFixed(10)));
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step / 2; v += step) {
+    out.push(Number(v.toFixed(10)));
+  }
   return out;
 }
 
@@ -170,13 +172,9 @@ export function HistoryCharts({ cadence }: { cadence: CadenceProps }) {
             from={plotFrom}
             to={h.to}
             cadence={cadence}
+            pnl={clampFrom(h.pnl, plotFrom)}
             pnlNowUsd={h.pnl.length > 0 ? h.pnl[h.pnl.length - 1].usd : null}
-          >
-            {/* PnL keeps its OWN scale — impermanent loss from the pair moving is far
-                larger than fee income, so putting it on the axis above would flatten
-                the fee signal into noise. Same panel, same x-window, separate y. */}
-            {h.pnl.length >= 2 && <PnlChart points={clampFrom(h.pnl, plotFrom)} from={plotFrom} to={h.to} />}
-          </PayChart>
+          />
         ) : (
           <div className="empty-chart">
             {h?.collectingSince == null ? (
@@ -206,8 +204,8 @@ function PayChart({
   from,
   to,
   cadence,
+  pnl,
   pnlNowUsd,
-  children,
 }: {
   fees: Point[];
   cost: Point[];
@@ -215,19 +213,25 @@ function PayChart({
   from: number;
   to: number;
   cadence: CadenceProps;
-  /** Latest position PnL including price movement, for the legend. */
+  /** Position PnL including price movement, overlaid on the same axis. */
+  pnl: Point[];
+  /** Latest PnL, for the legend. */
   pnlNowUsd: number | null;
-  /** The PnL strip, rendered between the legend and the tile row. */
-  children?: React.ReactNode;
 }) {
   const BOT = 150;
   const TICK = 164;
-  const peak = Math.max(...fees.map((p) => p.usd), ...cost.map((p) => p.usd), 0.01);
-  const ticks = niceTicks(peak);
-  // The top gridline is the scale, so the highest value always sits inside the plot.
-  const top = Math.max(peak, ticks[ticks.length - 1]);
+  // One axis for all three series. It has to reach below zero, because PnL can be
+  // negative and fees and cost never are — so $0 is a line through the plot rather
+  // than its floor.
+  const all = [...fees.map((p) => p.usd), ...cost.map((p) => p.usd), ...pnl.map((p) => p.usd), 0];
+  const lo = Math.min(...all);
+  const hi = Math.max(...all, 0.01);
+  const pad = (hi - lo) * 0.08 || 0.01;
+  const min = lo - pad;
+  const max = hi + pad;
+  const ticks = niceTicks(min, max);
   const x = (ts: number) => L + ((ts - from) / Math.max(1, to - from)) * (R - L);
-  const y = (usd: number) => BOT - (usd / top) * (BOT - TOP);
+  const y = (usd: number) => BOT - ((usd - min) / (max - min)) * (BOT - TOP);
 
   const feeLine = fees.map((p) => `${x(p.ts)},${y(p.usd)}`).join(" ");
   // Cost is a STEP: it only moves when a rebalance lands, and a smooth line would
@@ -241,6 +245,14 @@ function PayChart({
     for (const c of cost) if (c.ts <= ts) v = c.usd;
     return v;
   };
+  /** Nearest PnL reading — it is sampled on its own cadence, not the fee cadence. */
+  const pnlAt = (ts: number): number | null => {
+    if (pnl.length === 0) return null;
+    let best = pnl[0];
+    for (const p of pnl) if (Math.abs(p.ts - ts) < Math.abs(best.ts - ts)) best = p;
+    return best.usd;
+  };
+  const pnlLine = pnl.map((p) => `${x(p.ts)},${y(p.usd)}`).join(" ");
 
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -280,6 +292,21 @@ function PayChart({
               </text>
             </g>
           ))}
+
+          <line className="zero" x1={L} y1={y(0)} x2={R} y2={y(0)} />
+
+          {/* PnL first, so it sits BEHIND the two lines it shares the axis with. A
+              filled band rather than a third line: it is context for the fee and
+              cost story, not a peer of it. */}
+          {pnl.length >= 2 && (
+            <>
+              <path
+                d={`M${x(pnl[0].ts)},${y(0)} ${pnlLine.split(" ").map((s) => `L${s}`).join(" ")} L${x(pnl[pnl.length - 1].ts)},${y(0)} Z`}
+                className="fill-pnl"
+              />
+              <polyline points={pnlLine} className="line-pnl-band" />
+            </>
+          )}
 
           {/* Anchored to the first DATA point, not the plot edge — anchoring at L
               drew a filled region over a span that has no readings in it. */}
@@ -327,6 +354,12 @@ function PayChart({
               <span className="tip-k">Cost</span>
               <span className="bad">{fmtUsd(costAt(hv.ts))}</span>
             </div>
+            {pnlAt(hv.ts) != null && (
+              <div>
+                <span className="tip-k">PnL</span>
+                <span style={{ color: "var(--accent)" }}>{signedUsd(pnlAt(hv.ts)!)}</span>
+              </div>
+            )}
             <div>
               <span className="tip-k">Net</span>
               <span className={hv.usd - costAt(hv.ts) >= 0 ? "good" : "bad"}>
@@ -359,9 +392,6 @@ function PayChart({
           </span>
         )}
       </div>
-      {/* Tiles come after BOTH charts, not between them — they summarise the pair,
-          and splitting the two plots apart breaks the shared x-axis reading. */}
-      {costEnd.usd > 0 && children}
       {costEnd.usd > 0 && (
         <div className="tiles" style={{ marginTop: 11 }}>
           <MiniTile
@@ -430,45 +460,6 @@ function MiniTile({
         {valueNote && <span className="value-note">{valueNote}</span>}
       </div>
       {sub && <div className="faint">{sub}</div>}
-    </div>
-  );
-}
-
-function PnlChart({ points, from, to }: { points: Point[]; from: number; to: number }) {
-  const BOT = 96;
-  const lo = Math.min(...points.map((p) => p.usd), 0);
-  const hi = Math.max(...points.map((p) => p.usd), 0);
-  const pad = (hi - lo) * 0.18 || 1;
-  const x = (ts: number) => L + ((ts - from) / Math.max(1, to - from)) * (R - L);
-  const y = (usd: number) => BOT - ((usd - lo + pad / 2) / (hi - lo + pad)) * (BOT - TOP);
-  const line = points.map((p) => `${x(p.ts)},${y(p.usd)}`).join(" ");
-  const end = points[points.length - 1];
-
-  return (
-    <div className="chart-wrap">
-      <svg viewBox="0 0 700 110" role="img" aria-label="Position PnL including price movement over the selected window">
-        {/* Captioned in the plot: this lost its own panel heading when it moved
-            under the chart above, and an unlabelled second line is a riddle. */}
-        <text className="axis" x={L} y={10}>
-          PNL INCL. PRICE MOVE
-        </text>
-        <text className="axis" x={R} y={10} textAnchor="end">
-          {fmtUsd(end.usd)} now
-        </text>
-        <line className="zero" x1={L} y1={y(0)} x2={R} y2={y(0)} />
-        <text className="axis" x={0} y={y(0) + 3}>
-          {fmtUsd(0)}
-        </text>
-        {/* The extremes, so the swing has a magnitude and not just a shape. */}
-        <text className="axis" x={0} y={y(hi) + 3}>
-          {fmtUsd(hi)}
-        </text>
-        <text className="axis" x={0} y={y(lo) + 3}>
-          {fmtUsd(lo)}
-        </text>
-        <polyline points={line} className="line-pnl" />
-        <circle cx={x(end.ts)} cy={y(end.usd)} r={3.5} className="dot-pnl" />
-      </svg>
     </div>
   );
 }
