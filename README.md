@@ -90,8 +90,18 @@ Resume runs **at boot and on every poll**, not only at startup. This matters mor
 swap that failed mid-run used to leave the withdrawn funds in the wallet until someone restarted the
 service, and meanwhile the position — now missing one side — read as wildly unbalanced and kept
 triggering fresh path-B rebalances that bought back what was already sitting in the wallet. A position
-with an unresolved journal entry is now ineligible for a new rebalance. Unfinished entries are shown
-at the top of the **METRICS** tab.
+with an unresolved journal entry is ineligible for a new rebalance — **including a manual one**. The
+REBALANCE NOW button overrides the cooldown, range and cost guards, because those are policy and the
+operator is entitled to overrule them; it does not override this one. Starting a second rebalance
+would open a second journal entry against the same position, and resume attributes a leg by the range
+change it caused, which cannot tell two entries apart — with two pending, neither is resumable and
+the funds stay stranded. Unfinished entries are shown at the top of the **METRICS** tab.
+
+Where resume cannot establish a fact, it refuses rather than guesses. If a leg landed but the amount
+it moved was never journalled, the entry is marked failed with instructions to redeposit by hand,
+rather than falling back to "move everything in the wallet" — that balance is not a safe proxy for
+what the rebalance withdrew, since wSOL folds in native SOL above the `MIN_SOL_BALANCE` reserve and a
+quote balance includes the idle buffer.
 
 > One SDK behaviour worth knowing: the balanced strategy splits `floor(width/2)` bins per side and
 > gives the spare bin to the bid side, so an **even-width** position comes back one bin wider on its
@@ -101,7 +111,9 @@ at the top of the **METRICS** tab.
 
 All of `.env`; the rebalance thresholds, the wallet buffer and `MIN_SOL_BALANCE` are also editable
 from the SETTINGS tab, which validates a value before it is written (a bad value is rejected, never
-persisted — including self-contradictory pairs like a `MAX_TOPUP_USD` below the floor).
+persisted — including self-contradictory pairs like a `MAX_TOPUP_USD` below the floor, and
+combinations that are only dangerous together, like a compute-unit price and limit whose product
+would attach an absurd priority fee to every transaction).
 
 | Key | Default | What it does |
 |---|---|---|
@@ -120,6 +132,7 @@ persisted — including self-contradictory pairs like a `MAX_TOPUP_USD` below th
 | `MAX_SWAP_PRIORITY_LAMPORTS` | `200000` | Hard lamport ceiling on the priority fee Jupiter may attach to a swap |
 | `MAX_ACTIVE_BIN_SLIPPAGE` | `15` | Bins the active bin may move between simulation and landing |
 | `PRIORITY_FEE_MICROLAMPORTS` | `50000` | Per-CU price for transactions *we* build. Raise if transactions fail to confirm |
+| `COMPUTE_UNIT_LIMIT` | `600000` | CU limit for transactions *we* build, when the builder sets none. Capped at the runtime's 1,400,000 |
 | `SAMPLE_INTERVAL_MIN` | `15` | How often PnL is recorded for the METRICS charts |
 | `SAMPLE_RETENTION_DAYS` | `90` | How much sample history to keep |
 | `MIN_SOL_BALANCE` | `0.05` | Refuse to act below this, so fees and rent stay payable. Never spent on a top-up |
@@ -131,6 +144,13 @@ persisted — including self-contradictory pairs like a `MAX_TOPUP_USD` below th
 
 `DRY_RUN` and `AUTO_REBALANCE` can also be toggled from the UI; those overrides live in
 `data/state.json` so they survive a container rebuild.
+
+`PRIORITY_FEE_MICROLAMPORTS` and `COMPUTE_UNIT_LIMIT` are validated as a pair as well as
+individually, because neither is what costs money — the product is. A transaction's priority fee is
+`price × limit ÷ 1e6` lamports, so a plausible-looking price against a large limit is what actually
+drains a wallet. Any combination implying more than 0.01 SOL of priority fee on a single transaction
+is refused. For reference, the shipped defaults imply 30,000 lamports, and most recent blocks price
+at zero.
 
 ### The wallet needs a little of the quote token
 
@@ -358,6 +378,11 @@ Hiding a row is a convenience, not the guard. The endpoint re-reads chain state 
 every address before touching one, so a stale tab cannot close an account that has since been
 funded or adopted by a new position.
 
+That guard needs to know which mints belong to a managed position's pool, which means reading the
+pool. If any of those reads fails, the whole claim is refused and **nothing** is closed — a partial
+set of in-use mints would let a managed position's own empty account look closable. The panel says
+so and disables CLAIM RENT until the reads recover.
+
 Of what *is* listed, anything **holding a balance** cannot be closed either. Wrapped SOL is the
 exception: it closes to native SOL in the same wallet, which is how left-over wSOL from an
 interrupted rebalance is recovered, and the row is tagged `UNWRAPS TO SOL` rather than `CLOSABLE`.
@@ -366,7 +391,13 @@ interrupted rebalance is recovered, and the row is tagged `UNWRAPS TO SOL` rathe
 
 - Set `API_TOKEN`. Without one, every control endpoint is open — only safe bound to loopback. The
   app logs a loud warning if it is bound to a public interface without a token.
-- The dashboard is gated behind a full-page login; nothing renders until the token verifies.
+- The dashboard is gated behind a full-page login; nothing renders until the token verifies. **That
+  gate decides what the React app renders, not what the server answers.** The token protects every
+  *mutating* endpoint; the read endpoints are open. Anything that can reach the port can `GET`
+  `/api/settings`, `/api/wallet/tokens`, `/api/logs`, `/api/metrics`, `/api/positions` and
+  `/api/journal` without a token, disclosing the wallet address and balances, the full config
+  including the Telegram chat id, and the application log. Treat the published port as the real
+  boundary and do not expose it beyond a network you trust — see `SECURITY-READ-ENDPOINTS.md`.
 - `HOST` defaults to `127.0.0.1`. `docker-compose.yml` sets `0.0.0.0` *inside the container* — the
   published port is the real boundary.
 - Wallet endpoints require both `ENABLE_WALLET_UI=true` and a valid token, and refuse outright if no
