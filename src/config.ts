@@ -250,6 +250,31 @@ function validate(cfg: Config): void {
         `swap's priority fee, not a budget; got ${cfg.maxSwapPriorityLamports}`,
     );
   }
+  if (!Number.isInteger(cfg.computeUnitLimit) || cfg.computeUnitLimit < 1) {
+    throw new Error(`COMPUTE_UNIT_LIMIT must be an integer >= 1 (got ${cfg.computeUnitLimit})`);
+  }
+  if (cfg.computeUnitLimit > MAX_COMPUTE_UNIT_LIMIT) {
+    throw new Error(
+      `COMPUTE_UNIT_LIMIT must be <= ${MAX_COMPUTE_UNIT_LIMIT} — that is the runtime's per-transaction ` +
+        `maximum, so anything above it fails at simulation; got ${cfg.computeUnitLimit}`,
+    );
+  }
+  if (!Number.isInteger(cfg.priorityFeeMicroLamports) || cfg.priorityFeeMicroLamports < 0) {
+    throw new Error(
+      `PRIORITY_FEE_MICROLAMPORTS must be a non-negative integer (got ${cfg.priorityFeeMicroLamports})`,
+    );
+  }
+  // The per-CU price is not what costs money — the product is. Guard the thing
+  // that is actually charged: price * limit / 1e6 lamports for ONE transaction.
+  const maxPriorityLamportsPerTx = (cfg.priorityFeeMicroLamports * cfg.computeUnitLimit) / 1e6;
+  if (maxPriorityLamportsPerTx > MAX_PRIORITY_LAMPORTS_PER_TX) {
+    throw new Error(
+      `PRIORITY_FEE_MICROLAMPORTS (${cfg.priorityFeeMicroLamports}) x COMPUTE_UNIT_LIMIT ` +
+        `(${cfg.computeUnitLimit}) is ${maxPriorityLamportsPerTx} lamports of priority fee, which must be ` +
+        `<= ${MAX_PRIORITY_LAMPORTS_PER_TX} (0.01 SOL) — it is a safety ceiling on ONE transaction's ` +
+        `priority fee, not a budget`,
+    );
+  }
   if (cfg.maxSwapPriceImpactBps <= 0 || cfg.maxSwapPriceImpactBps > 10_000) {
     throw new Error(`MAX_SWAP_PRICE_IMPACT_BPS must be in (0,10000] (got ${cfg.maxSwapPriceImpactBps})`);
   }
@@ -268,6 +293,22 @@ function validate(cfg: Config): void {
  * the active bin always fits one account.
  */
 export const MAX_RANGE_BINS = 690;
+
+/**
+ * Solana's per-transaction compute ceiling (`MAX_COMPUTE_UNIT_LIMIT`). This is
+ * the runtime's hard maximum, not a preference: a `setComputeUnitLimit` above it
+ * is rejected, so every transaction the app builds would fail at simulation.
+ */
+export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+
+/**
+ * Hard ceiling, in LAMPORTS, on the priority fee one transaction we build may
+ * carry — `PRIORITY_FEE_MICROLAMPORTS * COMPUTE_UNIT_LIMIT / 1e6`. Neither input
+ * is dangerous alone; the product is what is actually charged. 0.01 SOL is far
+ * above observed market (most blocks price at zero) and far below an amount that
+ * could quietly drain the wallet one transaction at a time.
+ */
+export const MAX_PRIORITY_LAMPORTS_PER_TX = 10_000_000;
 
 /**
  * DEFAULTS_NOTE — why the shipped numbers are what they are, and when they lie.
