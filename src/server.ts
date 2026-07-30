@@ -17,6 +17,7 @@ import {
   saveKeypairFile,
 } from "./wallet/keystore.js";
 import type { RebalanceDeps } from "./meteora/rebalance.js";
+import { lamportsOf, partitionRebalances } from "./metrics.js";
 import { registerPoolRoutes } from "./routes/pools.js";
 import { registerPositionRoutes } from "./routes/positions.js";
 import { isAutoRebalance, isDryRun, type AppContext } from "./types.js";
@@ -121,12 +122,18 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
    * positions actually collected on the other.
    */
   app.get("/api/metrics", async () => {
-    const rebalances = store.rebalances();
+    const allRebalances = store.rebalances();
     const positions = store.positions();
     const solPriceUsd = await ctx.dataApi.solPriceUsd().catch(() => 0);
 
-    const costLamports = rebalances.reduce((a, r) => a + r.costLamports + r.rentLamports, 0);
+    // Cost and fee income must describe the same positions — see partitionRebalances.
+    const { managed: rebalances, retired } = partitionRebalances(allRebalances, positions);
+
+    const costLamports = lamportsOf(rebalances);
     const costUsd = (costLamports / 1_000_000_000) * solPriceUsd;
+    // Spending on positions since closed. Kept out of every ratio above, but
+    // surfaced so retiring a position cannot quietly erase what it cost.
+    const retiredCostUsd = (lamportsOf(retired) / 1_000_000_000) * solPriceUsd;
 
     // Fee income comes from the indexer's per-position PnL, which counts fees
     // already claimed as well as those still sitting in the position.
@@ -163,6 +170,8 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       pathB: rebalances.filter((r) => r.path === "B").length,
       costLamports,
       costUsd,
+      retiredCount: retired.length,
+      retiredCostUsd,
       feesEarnedUsd,
       netUsd: feesEarnedUsd - costUsd,
       /** Share of fee income eaten by rebalancing. */

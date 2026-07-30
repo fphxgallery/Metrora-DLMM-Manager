@@ -257,6 +257,14 @@ label.field > span {
 .muted {
   color: var(--text-dim);
 }
+/* An explanatory footnote under a panel's tiles — why a figure excludes something. */
+.note {
+  margin: 14px 0 0;
+  max-width: 78ch;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
 .faint {
   color: var(--text-faint);
 }
