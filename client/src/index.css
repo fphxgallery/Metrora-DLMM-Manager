@@ -793,10 +793,15 @@ th.sortable:hover {
   font-size: 11px;
 }
 
-/* The expander reads as a chip, so the row stays one visual band. */
+/* The expander reads as a chip, so the row stays one visual band. It inherits
+   the body's 13px rather than setting its own: it sits on the same line as the
+   balance chips, and a smaller font made it a visibly shorter box beside them. */
 button.chip.link {
   font-family: inherit;
-  font-size: 12px;
+  font-size: inherit;
+  /* A button's default `line-height: normal` made it a 21px box beside a 26px
+     chip. Inheriting the body's 1.5 makes the two boxes the same height. */
+  line-height: inherit;
   color: var(--accent);
   cursor: pointer;
   gap: 4px;
@@ -865,4 +870,14 @@ table.wal td.num {
   align-items: flex-end;
   gap: 8px;
   margin-left: 12px;
+}
+
+/* The wallet's own column. Chips are pushed to the bottom so they sit level
+   with the expander in the action column beside them. */
+.wal-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }

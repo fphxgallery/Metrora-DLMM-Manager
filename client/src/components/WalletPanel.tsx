@@ -130,8 +130,11 @@ export function WalletPanel({
 
   return (
     <div className="panel">
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
+      {/* Stretched, not top-aligned: the action column is the taller of the two,
+          and the chips are pushed to the bottom of this one so they land on the
+          same line as the expander rather than floating above it. */}
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "stretch" }}>
+        <div className="wal-main">
           <div className="row" style={{ gap: 16, marginBottom: data ? 8 : 0 }}>
             <span className="faint">wallet</span>
             <span>{addr ? shortPk(addr) : <span className="warn">none — create one in SETTINGS</span>}</span>
