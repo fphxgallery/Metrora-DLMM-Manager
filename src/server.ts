@@ -17,7 +17,7 @@ import {
   saveKeypairFile,
 } from "./wallet/keystore.js";
 import type { RebalanceDeps } from "./meteora/rebalance.js";
-import { lamportsOf, partitionRebalances } from "./metrics.js";
+import { cooldownFloor, lamportsOf, partitionRebalances } from "./metrics.js";
 import { aggregateByTs, downsample } from "./history.js";
 
 /** Chart windows offered by the METRICS tab, in milliseconds. */
@@ -192,6 +192,13 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       pollsTotal,
       medianGapMin: gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)] : null,
       minGapMin: gaps.length > 0 ? gaps[0] : null,
+      /**
+       * The cooldown the measured gaps were actually subject to, so the UI can say
+       * whether a gap is short *for this configuration* rather than against a fixed
+       * number. The smallest one across managed positions: that is the most
+       * permissive, and therefore the one capable of producing the shortest gaps.
+       */
+      cooldownMin: cooldownFloor(positions, cfg.cooldownMin),
       managed: positions.length,
       autoManaged: positions.filter((p) => p.auto).length,
       recent: rebalances.slice(-25).reverse(),

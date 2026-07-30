@@ -31,6 +31,8 @@ interface Metrics {
   pollsTotal: number;
   medianGapMin: number | null;
   minGapMin: number | null;
+  /** The cooldown the measured gaps were subject to — the yardstick for "short". */
+  cooldownMin: number;
   managed: number;
   autoManaged: number;
   recent: RebalanceRecord[];
@@ -83,6 +85,12 @@ export function MetricsTab() {
 
   if (error) return <div className="msg err">{error}</div>;
   if (!m) return <div className="panel faint">loading…</div>;
+
+  // Churn is the position re-centring about as fast as the cooldown permits, so
+  // the yardstick is the cooldown those gaps were subject to — not a fixed number,
+  // which would read as alarming on a 60-minute cooldown and unremarkable on a
+  // 5-minute one. The floor covers COOLDOWN_MIN=0, where every gap would qualify.
+  const churning = m.medianGapMin != null && m.medianGapMin <= Math.max(m.cooldownMin * 1.5, 5);
 
   return (
     <>
@@ -173,8 +181,10 @@ export function MetricsTab() {
             // The shortest gap is the sharper churn reading, so it stays visible
             // next to the value now that the guidance occupies the sub slot.
             valueNote={m.minGapMin == null ? undefined : `shortest ${fmtNum(m.minGapMin)}m`}
-            sub="Raise COOLDOWN_MIN or widen RANGE_BINS."
-            cls={m.minGapMin != null && m.minGapMin < 5 ? "warn" : undefined}
+            // One flag drives the colour and the advice, so the tile cannot show an
+            // unremarkable number with a fix suggested underneath it.
+            sub={churning ? "Raise COOLDOWN_MIN or widen RANGE_BINS." : undefined}
+            cls={churning ? "warn" : undefined}
           />
           <Tile label="Managed" value={fmtNum(m.managed)} sub={`${m.autoManaged} on auto`} />
         </div>
