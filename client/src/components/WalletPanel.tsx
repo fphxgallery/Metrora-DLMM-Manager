@@ -14,6 +14,7 @@ export interface TokenAccountView {
   usdPrice: number | null;
   usdValue: number | null;
   lockedReason: string | null;
+  inUse: boolean;
   unwrapsToSol: boolean;
 }
 
@@ -84,6 +85,16 @@ export function WalletPanel({
     return () => clearInterval(id);
   }, [load]);
 
+  /**
+   * The table's rows. A managed position's own token accounts are dropped
+   * entirely rather than shown disabled: they can never be closed, so a row
+   * offering nothing to do is just noise. They still appear as chips, and the
+   * server blocks them regardless of what this list contains.
+   */
+  const listed = useMemo(
+    () => (data?.accounts ?? []).filter((a) => !a.inUse),
+    [data],
+  );
   const closable = useMemo(() => (data?.accounts ?? []).filter((a) => a.lockedReason === null), [data]);
   const pickedRent = useMemo(
     () => closable.filter((a) => picked.has(a.pubkey)).reduce((s, a) => s + a.rentLamports, 0),
@@ -130,6 +141,17 @@ export function WalletPanel({
                 <span>{fmtUsd(data.totalUsd)}</span>
               </>
             )}
+            {listed.length > 0 && (
+              <>
+                <span className="wal-spacer" />
+                <button className="chip link" onClick={() => setOpen((v) => !v)}>
+                  {open ? "▴" : "▾"} {listed.length} TOKEN ACCOUNT{listed.length === 1 ? "" : "S"}
+                  {data!.reclaimableLamports > 0 && (
+                    <span className="warn"> · {(data!.reclaimableLamports / LAMPORTS).toFixed(5)} SOL CLAIMABLE</span>
+                  )}
+                </button>
+              </>
+            )}
           </div>
 
           <div className="wal-chips">
@@ -147,14 +169,6 @@ export function WalletPanel({
                   {a.usdValue !== null && <span className="usd">{fmtUsd(a.usdValue)}</span>}
                 </span>
               ))}
-            {data && data.accounts.length > 0 && (
-              <button className="chip link" onClick={() => setOpen((v) => !v)}>
-                {open ? "▴" : "▾"} {data.accounts.length} TOKEN ACCOUNT{data.accounts.length === 1 ? "" : "S"}
-                {data.reclaimableLamports > 0 && (
-                  <span className="warn"> · {(data.reclaimableLamports / LAMPORTS).toFixed(5)} SOL CLAIMABLE</span>
-                )}
-              </button>
-            )}
           </div>
         </div>
 
@@ -172,7 +186,7 @@ export function WalletPanel({
 
       {error && <div className="msg err" style={{ marginTop: 10 }}>{error}</div>}
 
-      {open && data && (
+      {open && data && listed.length > 0 && (
         <>
           <table className="wal">
             <thead>
@@ -186,7 +200,7 @@ export function WalletPanel({
               </tr>
             </thead>
             <tbody>
-              {data.accounts.map((a) => (
+              {listed.map((a) => (
                 <tr key={a.pubkey}>
                   <td>
                     <input
@@ -219,9 +233,7 @@ export function WalletPanel({
                     {a.lockedReason === null ? (
                       <span className="tag rent">{a.unwrapsToSol ? "UNWRAPS TO SOL" : "CLOSABLE"}</span>
                     ) : (
-                      <span className={`tag ${a.lockedReason === "in use by a managed position" ? "inuse" : ""}`}>
-                        {a.lockedReason}
-                      </span>
+                      <span className="tag">{a.lockedReason}</span>
                     )}
                   </td>
                 </tr>
@@ -237,7 +249,7 @@ export function WalletPanel({
                 closable.length > 0 ? (
                   `${closable.length} account(s) closable · ${(data.reclaimableLamports / LAMPORTS).toFixed(5)} SOL`
                 ) : (
-                  "nothing to claim — every account holds a balance or is in use"
+                  "nothing to claim — every account listed holds a balance"
                 )
               ) : (
                 <>
@@ -251,16 +263,12 @@ export function WalletPanel({
             </button>
           </div>
 
-          <div className="disc">
-            Only accounts with no balance can be closed, and those of a managed position's tokens never can — the next
-            rebalance would re-create them and pay the same rent again. A wrapped-SOL account closes to native SOL.
-            {!data.protectionComplete && (
-              <>
-                {" "}
-                <b className="warn">A pool's tokens could not be read, so that protection is incomplete right now.</b>
-              </>
-            )}
-          </div>
+          {!data.protectionComplete && (
+            <div className="msg" style={{ marginTop: 10, borderColor: "var(--warn)" }}>
+              <b className="warn">A pool's tokens could not be read.</b> A managed position's accounts are normally
+              hidden here; right now one may be listed that should not be. The claim itself still refuses them.
+            </div>
+          )}
         </>
       )}
     </div>

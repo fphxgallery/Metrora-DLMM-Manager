@@ -44,9 +44,17 @@ export interface TokenAccountView extends RawTokenAccount {
   usdValue: number | null;
   /** Null when the account can be closed; otherwise why it cannot. */
   lockedReason: string | null;
+  /**
+   * A managed position's own token account. Reported as a flag as well as a
+   * reason because the UI hides these rows, and matching on the prose would
+   * break silently the day the wording changes.
+   */
+  inUse: boolean;
   /** Closing this one returns its balance as native SOL, not just the rent. */
   unwrapsToSol: boolean;
 }
+
+export const IN_USE_REASON = "in use by a managed position";
 
 /**
  * Why an account may not be closed, or null if it may.
@@ -62,7 +70,7 @@ export interface TokenAccountView extends RawTokenAccount {
  * is lost. Left-over wSOL from an interrupted rebalance is recovered this way.
  */
 export function lockReason(a: RawTokenAccount, inUseMints: ReadonlySet<string>): string | null {
-  if (inUseMints.has(a.mint)) return "in use by a managed position";
+  if (inUseMints.has(a.mint)) return IN_USE_REASON;
   if (a.mint === NATIVE_MINT.toBase58()) return null;
   if (a.uiAmount > 0) return "holds a balance";
   return null;
@@ -76,6 +84,7 @@ export function buildTokenView(a: RawTokenAccount, meta: TokenMeta | undefined, 
     usdPrice,
     usdValue: usdPrice === null ? null : a.uiAmount * usdPrice,
     lockedReason: lockReason(a, inUseMints),
+    inUse: inUseMints.has(a.mint),
     unwrapsToSol: a.mint === NATIVE_MINT.toBase58() && a.uiAmount > 0,
   };
 }

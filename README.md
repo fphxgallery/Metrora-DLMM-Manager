@@ -346,16 +346,20 @@ The rent shown per row is the account's **own** lamport balance, not a constant 
 account with extensions holds more than the 0.00203928 SOL of a standard one, and closing returns
 what is actually there.
 
-Two accounts are never closable:
+**Either token of a managed position's pool is not listed at all**, even when empty — the
+quote-token buffer among them. The rebalance path re-creates those accounts, so closing one
+reclaims rent that the next rebalance immediately pays again; there is nothing to offer, so the row
+is left out. They remain visible as chips, and the count beside the expander is the number of rows
+you can actually see. If every account is in use, the expander itself disappears rather than
+opening an empty table.
 
-- **Anything holding a balance.** The exception is wrapped SOL, which closes to native SOL in the
-  same wallet — that is how left-over wSOL from an interrupted rebalance is recovered, and the row
-  is tagged `UNWRAPS TO SOL` rather than `CLOSABLE`.
-- **Either token of a managed position's pool**, even when empty. The rebalance path re-creates
-  those accounts, so closing one reclaims rent that the next rebalance immediately pays again. This
-  includes the quote-token buffer above. The checkbox is disabled, and the endpoint re-reads chain
-  state and re-classifies every address before it touches one — a stale tab cannot close an account
-  that has since been funded or adopted by a new position.
+Hiding a row is a convenience, not the guard. The endpoint re-reads chain state and re-classifies
+every address before touching one, so a stale tab cannot close an account that has since been
+funded or adopted by a new position.
+
+Of what *is* listed, anything **holding a balance** cannot be closed either. Wrapped SOL is the
+exception: it closes to native SOL in the same wallet, which is how left-over wSOL from an
+interrupted rebalance is recovered, and the row is tagged `UNWRAPS TO SOL` rather than `CLOSABLE`.
 
 ## Security
 

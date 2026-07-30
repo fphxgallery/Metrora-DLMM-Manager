@@ -59,6 +59,16 @@ test("wrapped SOL of a managed pool is protected like any other side", () => {
   assert.equal(lockReason(acct({ mint: WSOL, uiAmount: 0.21 }), new Set([WSOL])), "in use by a managed position");
 });
 
+test("in-use is reported as a flag, not only as prose", () => {
+  // The UI hides these rows entirely. Matching on the reason text would break
+  // silently the day the wording changes, so the flag is what it filters on.
+  const inUse = new Set([USDC]);
+  assert.equal(buildTokenView(acct({ mint: USDC }), undefined, inUse).inUse, true);
+  assert.equal(buildTokenView(acct({ mint: USDC, uiAmount: 15 }), undefined, inUse).inUse, true);
+  assert.equal(buildTokenView(acct({ uiAmount: 15 }), undefined, inUse).inUse, false);
+  assert.equal(buildTokenView(acct(), undefined, none).inUse, false);
+});
+
 // ---- pricing --------------------------------------------------------------
 
 test("a known mint gets a symbol and a USD value", () => {
