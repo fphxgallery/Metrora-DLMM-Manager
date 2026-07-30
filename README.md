@@ -200,11 +200,21 @@ Cost is drawn as a **step**, because it only moves when a rebalance lands — a 
 continuous spending and hide that the spend is lumpy. Ticks under the axis mark each rebalance, so a
 cluster of ticks against a flat fee line is the churn signal.
 
-PnL including price movement sits under that chart, sharing its x-axis but keeping **its own y-scale**.
-Impermanent loss dwarfs fee income, so putting both on one axis would flatten the fee signal into
-noise. Its current value is repeated at the end of the legend, since it is the one figure the two
-lines above cannot give you: fees and cost say what the automation *did*, PnL says what the position
-was worth having done.
+PnL including price movement is overlaid on the same axis, as a recessive band behind the two lines —
+context for the fee story rather than a peer of it. It is the one figure the other two cannot give
+you: fees and cost say what the automation *did*, PnL says what the position was worth having done.
+Because PnL can be negative where fees and cost never are, `$0` is a dashed line through the plot
+rather than its floor.
+
+Two consequences of sharing one axis, both deliberate:
+
+- **The cost line is effectively given up.** A few cents of cost against a dollar-scale axis sits on
+  the zero line. The total stays in the legend and `COST PER REBALANCE` has its own tile, so the
+  number is never lost — but you will not read it off the chart.
+- **The overlay reads well only while PnL is the same order of magnitude as fees.** A 5% price move on
+  a $120 position puts PnL near −$8 against well under a dollar of fees, and the fee line flattens
+  until the swing passes. Splitting automatically back into two charts was considered and rejected: a
+  layout that rearranges itself is harder to trust than one that degrades predictably.
 
 Every figure in the tile row below belongs to the selected window; the numbers on the position line
 below that belong to the position, whatever window is showing.
