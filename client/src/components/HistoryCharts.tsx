@@ -58,6 +58,11 @@ function niceTicks(max: number, count = 4): number[] {
   return out;
 }
 
+/** "+$1.06" / "−$0.42". The sign is the whole point of a PnL, so it is never dropped. */
+function signedUsd(v: number): string {
+  return `${v >= 0 ? "+" : "−"}${fmtUsd(Math.abs(v))}`;
+}
+
 /** Cumulative series are rebased to the window so a short window is not two flat
  * lines pinned near their all-time totals — "what did this earn and spend over
  * THIS period" is the question the timeframe pills are asking. */
@@ -165,6 +170,7 @@ export function HistoryCharts({ cadence }: { cadence: CadenceProps }) {
             from={plotFrom}
             to={h.to}
             cadence={cadence}
+            pnlNowUsd={h.pnl.length > 0 ? h.pnl[h.pnl.length - 1].usd : null}
           >
             {/* PnL keeps its OWN scale — impermanent loss from the pair moving is far
                 larger than fee income, so putting it on the axis above would flatten
@@ -200,6 +206,7 @@ function PayChart({
   from,
   to,
   cadence,
+  pnlNowUsd,
   children,
 }: {
   fees: Point[];
@@ -208,6 +215,8 @@ function PayChart({
   from: number;
   to: number;
   cadence: CadenceProps;
+  /** Latest position PnL including price movement, for the legend. */
+  pnlNowUsd: number | null;
   /** The PnL strip, rendered between the legend and the tile row. */
   children?: React.ReactNode;
 }) {
@@ -227,21 +236,11 @@ function PayChart({
     .map((p, i) => (i === 0 ? `M${x(p.ts)},${y(p.usd)}` : `H${x(p.ts)}V${y(p.usd)}`))
     .join(" ");
 
-  // Breakeven: where cumulative fees first overtake cumulative cost inside this
-  // window. Only marked when the crossing is actually here — no marker for a
-  // crossing that happened outside the view.
   const costAt = (ts: number) => {
     let v = cost[0]?.usd ?? 0;
     for (const c of cost) if (c.ts <= ts) v = c.usd;
     return v;
   };
-  let cross: Point | null = null;
-  for (let i = 1; i < fees.length; i++) {
-    if (fees[i].usd >= costAt(fees[i].ts) && fees[i - 1].usd < costAt(fees[i - 1].ts)) {
-      cross = fees[i];
-      break;
-    }
-  }
 
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -290,13 +289,6 @@ function PayChart({
           />
           <path d={costPath} className="line-cost" />
           <polyline points={feeLine} className="line-fee" />
-
-          {cross && (
-            <>
-              <line className="zero" x1={x(cross.ts)} y1={TOP} x2={x(cross.ts)} y2={BOT} />
-              <circle cx={x(cross.ts)} cy={y(cross.usd)} r={4.5} className="cross-mark" />
-            </>
-          )}
 
           <g className="event-ticks">
             {events.map((ts) => (
@@ -358,13 +350,14 @@ function PayChart({
           <i className="sw-event" />
           Rebalance ({events.length})
         </span>
-        <span className="legend-end faint">
-          {cross
-            ? `break even ${fmtAgo(cross.ts)}`
-            : feeEnd.usd >= costEnd.usd
-              ? "in profit across the whole window"
-              : "not yet break even"}
-        </span>
+        {/* Position PnL including price movement — the one figure on this card that
+            the two lines above cannot tell you. Fees and cost say what the
+            automation did; this says what the position is worth having done. */}
+        {pnlNowUsd != null && (
+          <span className="legend-end faint">
+            PnL <b className={pnlNowUsd >= 0 ? "good" : "bad"}>{signedUsd(pnlNowUsd)}</b>
+          </span>
+        )}
       </div>
       {/* Tiles come after BOTH charts, not between them — they summarise the pair,
           and splitting the two plots apart breaks the shared x-axis reading. */}

@@ -408,11 +408,6 @@ button.pill-btn[aria-pressed="true"] {
 .dot-pnl {
   fill: var(--accent);
 }
-.cross-mark {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 2;
-}
 .event-ticks line {
   stroke: #3a475a;
   stroke-width: 2;
@@ -450,6 +445,14 @@ button.pill-btn[aria-pressed="true"] {
 .chart-legend b {
   font-weight: 400;
   color: var(--text);
+}
+/* `.chart-legend b` is more specific than a bare `.good`, so a coloured value in
+   the legend needs the class spelled out here or it silently renders as plain ink. */
+.chart-legend b.good {
+  color: var(--good);
+}
+.chart-legend b.bad {
+  color: var(--bad);
 }
 .chart-legend i {
   display: inline-block;
