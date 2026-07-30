@@ -21,9 +21,6 @@ interface Metrics {
   pathB: number;
   costLamports: number;
   costUsd: number;
-  /** Rebalances of positions no longer managed — excluded from every figure above. */
-  retiredCount: number;
-  retiredCostUsd: number;
   feesEarnedUsd: number;
   netUsd: number;
   costDragPct: number | null;
@@ -157,13 +154,6 @@ export function MetricsTab() {
             cls={m.costDragPct != null && m.costDragPct > 50 ? "bad" : undefined}
           />
         </div>
-        {m.retiredCount > 0 && (
-          <p className="note">
-            Excludes {fmtNum(m.retiredCount)} rebalance{m.retiredCount === 1 ? "" : "s"} of closed positions
-            ({fmtUsd(m.retiredCostUsd)}). Fee income can only be read for positions still managed, so counting
-            that spending here would compare a closed position's cost with a current one's earnings.
-          </p>
-        )}
       </div>
 
       <div className="panel">
