@@ -141,17 +141,6 @@ export function WalletPanel({
                 <span>{fmtUsd(data.totalUsd)}</span>
               </>
             )}
-            {listed.length > 0 && (
-              <>
-                <span className="wal-spacer" />
-                <button className="chip link" onClick={() => setOpen((v) => !v)}>
-                  {open ? "▴" : "▾"} {listed.length} TOKEN ACCOUNT{listed.length === 1 ? "" : "S"}
-                  {data!.reclaimableLamports > 0 && (
-                    <span className="warn"> · {(data!.reclaimableLamports / LAMPORTS).toFixed(5)} SOL CLAIMABLE</span>
-                  )}
-                </button>
-              </>
-            )}
           </div>
 
           <div className="wal-chips">
@@ -172,16 +161,29 @@ export function WalletPanel({
           </div>
         </div>
 
-        <button
-          className="btn"
-          disabled={busy}
-          onClick={() => {
-            void load();
-            void onRefresh();
-          }}
-        >
-          {busy ? "…" : "REFRESH"}
-        </button>
+        {/* Refresh on top, the expander beneath it — both right-aligned, so the
+            claim state reads as part of the action column rather than the
+            wallet's identity line. */}
+        <div className="wal-actions">
+          <button
+            className="btn"
+            disabled={busy}
+            onClick={() => {
+              void load();
+              void onRefresh();
+            }}
+          >
+            {busy ? "…" : "REFRESH"}
+          </button>
+          {listed.length > 0 && (
+            <button className="chip link" onClick={() => setOpen((v) => !v)}>
+              {open ? "▴" : "▾"} {listed.length} TOKEN ACCOUNT{listed.length === 1 ? "" : "S"}
+              {data!.reclaimableLamports > 0 && (
+                <span className="warn"> · {(data!.reclaimableLamports / LAMPORTS).toFixed(5)} SOL CLAIMABLE</span>
+              )}
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <div className="msg err" style={{ marginTop: 10 }}>{error}</div>}

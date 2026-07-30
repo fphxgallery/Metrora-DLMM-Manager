@@ -858,7 +858,11 @@ table.wal td.num {
   line-height: 1.6;
 }
 
-/* Pushes the token-account expander to the right of the wallet line. */
-.wal-spacer {
-  flex: 1;
+/* Refresh, then the token-account expander beneath it, both flush right. */
+.wal-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  margin-left: 12px;
 }

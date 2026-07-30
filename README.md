@@ -337,7 +337,8 @@ The wallet bar on POSITIONS lists every balance as a chip — SOL plus each SPL 
 priced through Jupiter. A mint Jupiter has never seen still lists, with its balance and no USD
 figure: an unknown airdrop may be exactly the thing holding an account open.
 
-Behind the expander is the account view. A Solana token account is not free — it holds a
+Behind the expander — under REFRESH, in the panel's right-hand action column — is the account view.
+A Solana token account is not free — it holds a
 rent-exempt deposit that is returned in full when the account is closed. Airdrops, one-off swaps and
 closed positions leave empty accounts behind, and each is a small amount of SOL sitting idle.
 Selecting them and pressing CLAIM RENT closes them in one transaction.
