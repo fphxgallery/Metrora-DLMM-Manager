@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.ts";
 import { fmtAgo, fmtPct, fmtUsd } from "../format.ts";
 
-const TIMEFRAMES = ["24H", "7D", "30D", "90D"] as const;
+// ALL is a timeframe rather than a separate all-time panel: the same figures over
+// an unbounded window, in one place, read the same way.
+const TIMEFRAMES = ["24H", "7D", "30D", "90D", "ALL"] as const;
 type Timeframe = (typeof TIMEFRAMES)[number];
 
 interface Point {
@@ -12,7 +14,10 @@ interface Point {
 
 interface History {
   tf: string;
-  from: number;
+  /** null for ALL, which has no left edge. */
+  from: number | null;
+  /** Oldest moment the response covers — cost reaches back further than samples. */
+  dataFrom: number | null;
   to: number;
   collectingSince: number | null;
   sampleIntervalMin: number;
@@ -20,6 +25,13 @@ interface History {
   pnl: Point[];
   cost: Point[];
   events: number[];
+}
+
+/** Cadence figures, which belong to the position rather than the window. */
+export interface CadenceProps {
+  medianGapMin: number | null;
+  minGapMin: number | null;
+  cooldownMin: number;
 }
 
 // Plot geometry, in viewBox units. The SVG scales to its container, so these are
@@ -70,7 +82,7 @@ function clampFrom(points: Point[], from: number): Point[] {
   return before ? [{ ts: from, usd: before.usd }, ...inside] : inside;
 }
 
-export function HistoryCharts() {
+export function HistoryCharts({ cadence }: { cadence: CadenceProps }) {
   const [tf, setTf] = useState<Timeframe>("24H");
   const [h, setH] = useState<History | null>(null);
   const [error, setError] = useState("");
@@ -91,9 +103,11 @@ export function HistoryCharts() {
   }, [load]);
 
   // The plot starts where the data starts, not where the requested window starts.
+  // ALL has no left edge, so there the data start IS the edge.
   const plotFrom = useMemo(() => {
-    if (!h || h.fees.length === 0) return h?.from ?? 0;
-    return Math.max(h.from, h.fees[0].ts);
+    if (!h) return 0;
+    const edge = h.from ?? h.dataFrom ?? h.to - 86_400_000;
+    return Math.max(edge, h.dataFrom ?? edge);
   }, [h]);
   const fees = useMemo(() => rebase(clampFrom(h?.fees ?? [], plotFrom)), [h, plotFrom]);
   // Clamped BEFORE rebasing, so cost is measured from its value at the plot's
@@ -136,7 +150,9 @@ export function HistoryCharts() {
               {netUsd >= 0 ? "+" : "−"}
               {fmtUsd(Math.abs(netUsd))}
             </b>
-            <span className="faint">net over {tf.toLowerCase()} · fees earned minus rebalance cost</span>
+            <span className="faint">
+              net {tf === "ALL" ? "all time" : `over ${tf.toLowerCase()}`} · fees earned minus rebalance cost
+            </span>
           </div>
         )}
 
@@ -148,7 +164,13 @@ export function HistoryCharts() {
             events={h.events.filter((ts) => ts >= plotFrom)}
             from={plotFrom}
             to={h.to}
-          />
+            cadence={cadence}
+          >
+            {/* PnL keeps its OWN scale — impermanent loss from the pair moving is far
+                larger than fee income, so putting it on the axis above would flatten
+                the fee signal into noise. Same panel, same x-window, separate y. */}
+            {h.pnl.length >= 2 && <PnlChart points={clampFrom(h.pnl, plotFrom)} from={plotFrom} to={h.to} />}
+          </PayChart>
         ) : (
           <div className="empty-chart">
             {h?.collectingSince == null ? (
@@ -167,19 +189,6 @@ export function HistoryCharts() {
         )}
 
       </div>
-
-      {h && h.pnl.length >= 2 && (
-        <div className="panel">
-          <div className="panel-hd">
-            <h2>Net PnL including price move</h2>
-            <span className="faint">{fmtUsd(h.pnl[h.pnl.length - 1].usd)} now</span>
-          </div>
-          {/* Its own chart, never a second axis on the one above: impermanent loss
-              from the pair moving is far larger than fee income, so sharing a scale
-              would render the fee signal invisible. */}
-          <PnlChart points={clampFrom(h.pnl, plotFrom)} from={plotFrom} to={h.to} />
-        </div>
-      )}
     </>
   );
 }
@@ -190,12 +199,17 @@ function PayChart({
   events,
   from,
   to,
+  cadence,
+  children,
 }: {
   fees: Point[];
   cost: Point[];
   events: number[];
   from: number;
   to: number;
+  cadence: CadenceProps;
+  /** The PnL strip, rendered between the legend and the tile row. */
+  children?: React.ReactNode;
 }) {
   const BOT = 150;
   const TICK = 164;
@@ -352,16 +366,46 @@ function PayChart({
               : "not yet break even"}
         </span>
       </div>
+      {/* Tiles come after BOTH charts, not between them — they summarise the pair,
+          and splitting the two plots apart breaks the shared x-axis reading. */}
+      {costEnd.usd > 0 && children}
       {costEnd.usd > 0 && (
         <div className="tiles" style={{ marginTop: 11 }}>
-          <MiniTile label="Cost drag" value={feeEnd.usd > 0 ? fmtPct((costEnd.usd / feeEnd.usd) * 100, 1) : "—"} cls={dragCls(feeEnd.usd, costEnd.usd)} />
+          <MiniTile
+            label="Cost drag"
+            value={feeEnd.usd > 0 ? fmtPct((costEnd.usd / feeEnd.usd) * 100, 1) : "—"}
+            cls={dragCls(feeEnd.usd, costEnd.usd)}
+          />
           <MiniTile label="Cost per rebalance" value={events.length > 0 ? fmtUsd(costEnd.usd / events.length) : "—"} />
-          <MiniTile label="Fees / day" value={fmtUsd(feeEnd.usd / Math.max(1 / 24, (to - from) / 86_400_000))} cls="good" />
-          <MiniTile label="Rebalances" value={String(events.length)} />
+          <MiniTile
+            label="Fees / day"
+            value={fmtUsd(feeEnd.usd / Math.max(1 / 24, (to - from) / 86_400_000))}
+            cls="good"
+          />
+          {/* The rebalance COUNT is already in the legend, so this slot carries the
+              cadence instead — the number that says whether the count is a problem. */}
+          <MiniTile
+            label="Median gap"
+            value={cadence.medianGapMin == null ? "—" : `${Math.round(cadence.medianGapMin)}m`}
+            valueNote={cadence.minGapMin == null ? undefined : `shortest ${Math.round(cadence.minGapMin)}m`}
+            sub={isChurning(cadence) ? "Raise COOLDOWN_MIN or widen RANGE_BINS." : undefined}
+            cls={isChurning(cadence) ? "warn" : undefined}
+          />
         </div>
       )}
     </>
   );
+}
+
+/**
+ * Churn is the position re-centring about as fast as the cooldown permits, so the
+ * yardstick is the cooldown those gaps were subject to — against a fixed number
+ * the same reading is alarming on a 60-minute cooldown and unremarkable on a
+ * 5-minute one. The floor covers COOLDOWN_MIN=0, where every gap would qualify.
+ */
+function isChurning({ medianGapMin, cooldownMin }: CadenceProps): boolean {
+  if (medianGapMin == null) return false;
+  return medianGapMin <= Math.max(cooldownMin * 1.5, 5);
 }
 
 function dragCls(fees: number, cost: number): string | undefined {
@@ -372,11 +416,27 @@ function dragCls(fees: number, cost: number): string | undefined {
   return "good";
 }
 
-function MiniTile({ label, value, cls }: { label: string; value: string; cls?: string }) {
+function MiniTile({
+  label,
+  value,
+  valueNote,
+  sub,
+  cls,
+}: {
+  label: string;
+  value: string;
+  valueNote?: string;
+  sub?: string;
+  cls?: string;
+}) {
   return (
     <div className="tile">
       <div className="label">{label}</div>
-      <div className={`value ${cls ?? ""}`}>{value}</div>
+      <div className={`value ${cls ?? ""}`}>
+        {value}
+        {valueNote && <span className="value-note">{valueNote}</span>}
+      </div>
+      {sub && <div className="faint">{sub}</div>}
     </div>
   );
 }
@@ -394,6 +454,14 @@ function PnlChart({ points, from, to }: { points: Point[]; from: number; to: num
   return (
     <div className="chart-wrap">
       <svg viewBox="0 0 700 110" role="img" aria-label="Position PnL including price movement over the selected window">
+        {/* Captioned in the plot: this lost its own panel heading when it moved
+            under the chart above, and an unlabelled second line is a riddle. */}
+        <text className="axis" x={L} y={10}>
+          PNL INCL. PRICE MOVE
+        </text>
+        <text className="axis" x={R} y={10} textAnchor="end">
+          {fmtUsd(end.usd)} now
+        </text>
         <line className="zero" x1={L} y1={y(0)} x2={R} y2={y(0)} />
         <text className="axis" x={0} y={y(0) + 3}>
           {fmtUsd(0)}

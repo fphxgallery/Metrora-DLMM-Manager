@@ -331,6 +331,12 @@ button.pill-btn[aria-pressed="true"] {
   overflow: visible;
 }
 
+/* The PnL strip follows the legend inside the same panel — without this its
+   in-plot caption crowds the legend row above it. */
+.chart-legend + .chart-wrap {
+  margin-top: 10px;
+}
+
 .grid {
   stroke: #1a2330;
   stroke-width: 1;
@@ -450,6 +456,27 @@ button.pill-btn[aria-pressed="true"] {
 }
 .chart-legend .legend-end {
   margin-left: auto;
+}
+
+/* One managed position, on one line — a table row's worth of facts without the
+   table's header, borders and vertical padding. */
+.pos-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.pos-line + .pos-line {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.pos-line b {
+  font-weight: 400;
+  color: var(--text);
+  letter-spacing: 1px;
 }
 
 .empty-chart {

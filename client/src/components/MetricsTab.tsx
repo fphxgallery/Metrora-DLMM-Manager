@@ -14,24 +14,17 @@ interface RebalanceRecord {
   sigs: string[];
 }
 
+// Only what this tab still reads. The totals that used to sit in an "all time"
+// panel now come from /api/history with tf=ALL, so the chart and the lifetime
+// figures cannot drift apart.
 interface Metrics {
   solPriceUsd: number;
-  rebalanceCount: number;
   pathA: number;
   pathB: number;
-  costLamports: number;
-  costUsd: number;
-  feesEarnedUsd: number;
-  netUsd: number;
-  costDragPct: number | null;
-  timeInRangePct: number | null;
-  pollsTotal: number;
   medianGapMin: number | null;
   minGapMin: number | null;
   /** The cooldown the measured gaps were subject to — the yardstick for "short". */
   cooldownMin: number;
-  managed: number;
-  autoManaged: number;
   recent: RebalanceRecord[];
   perPosition: {
     positionPk: string;
@@ -83,12 +76,6 @@ export function MetricsTab() {
   if (error) return <div className="msg err">{error}</div>;
   if (!m) return <div className="panel faint">loading…</div>;
 
-  // Churn is the position re-centring about as fast as the cooldown permits, so
-  // the yardstick is the cooldown those gaps were subject to — not a fixed number,
-  // which would read as alarming on a 60-minute cooldown and unremarkable on a
-  // 5-minute one. The floor covers COOLDOWN_MIN=0, where every gap would qualify.
-  const churning = m.medianGapMin != null && m.medianGapMin <= Math.max(m.cooldownMin * 1.5, 5);
-
   return (
     <>
       {journal && journal.pending.length > 0 && (
@@ -129,86 +116,36 @@ export function MetricsTab() {
         </div>
       )}
 
-      <HistoryCharts />
+      <HistoryCharts
+        cadence={{ medianGapMin: m.medianGapMin, minGapMin: m.minGapMin, cooldownMin: m.cooldownMin }}
+      />
 
-      <div className="panel">
-        <h2>All time</h2>
-        <div className="tiles">
-          <Tile label="Fees earned" value={fmtUsd(m.feesEarnedUsd)} sub="managed positions" cls="good" />
-          <Tile
-            label="Rebalance cost"
-            value={fmtUsd(m.costUsd)}
-            sub={`${fmtNum(m.costLamports / 1e9, 5)} SOL in fees + rent`}
-            cls="bad"
-          />
-          <Tile
-            label="Net"
-            value={fmtUsd(m.netUsd)}
-            sub="fees earned minus rebalance cost"
-            cls={m.netUsd >= 0 ? "good" : "bad"}
-          />
-          <Tile
-            label="Cost drag"
-            value={m.costDragPct == null ? "—" : fmtPct(m.costDragPct, 1)}
-            sub="share of fee income spent rebalancing"
-            cls={m.costDragPct != null && m.costDragPct > 50 ? "bad" : undefined}
-          />
-        </div>
-      </div>
-
-      <div className="panel">
-        <h2>Behaviour</h2>
-        <div className="tiles">
-          <Tile
-            label="Time in range"
-            value={m.timeInRangePct == null ? "—" : fmtPct(m.timeInRangePct, 1)}
-            sub={`${fmtNum(m.pollsTotal)} polls sampled`}
-          />
-          <Tile label="Rebalances" value={fmtNum(m.rebalanceCount)} sub={`${m.pathA} atomic · ${m.pathB} with swap`} />
-          <Tile
-            label="Median gap"
-            value={m.medianGapMin == null ? "—" : `${fmtNum(m.medianGapMin)}m`}
-            // The shortest gap is the sharper churn reading, so it stays visible
-            // next to the value now that the guidance occupies the sub slot.
-            valueNote={m.minGapMin == null ? undefined : `shortest ${fmtNum(m.minGapMin)}m`}
-            // One flag drives the colour and the advice, so the tile cannot show an
-            // unremarkable number with a fix suggested underneath it.
-            sub={churning ? "Raise COOLDOWN_MIN or widen RANGE_BINS." : undefined}
-            cls={churning ? "warn" : undefined}
-          />
-          <Tile label="Managed" value={fmtNum(m.managed)} sub={`${m.autoManaged} on auto`} />
-        </div>
-      </div>
-
+      {/* One line per position instead of a table. Every figure here belongs to the
+          POSITION rather than to the chart's window, which is why it is not a tile
+          row: mixing the two invites reading a lifetime number as a windowed one. */}
       {m.perPosition.length > 0 && (
         <div className="panel">
-          <h2>Per position</h2>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Pair</th>
-                  <th>Position</th>
-                  <th>Auto</th>
-                  <th>Rebalances</th>
-                  <th>Last</th>
-                  <th>Time in range</th>
-                </tr>
-              </thead>
-              <tbody>
-                {m.perPosition.map((p) => (
-                  <tr key={p.positionPk}>
-                    <td>{p.pairName ?? "—"}</td>
-                    <td>{shortPk(p.positionPk)}</td>
-                    <td>{p.auto ? <span className="pill good">on</span> : <span className="pill">off</span>}</td>
-                    <td>{fmtNum(p.rebalanceCount)}</td>
-                    <td>{fmtAgo(p.lastRebalanceAt)}</td>
-                    <td>{p.timeInRangePct == null ? "—" : fmtPct(p.timeInRangePct, 1)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {m.perPosition.map((p) => (
+            <div className="pos-line" key={p.positionPk}>
+              <b>{p.pairName ?? "—"}</b>
+              <span className="faint">{shortPk(p.positionPk)}</span>
+              {p.auto ? <span className="pill good">auto</span> : <span className="pill">manual</span>}
+              <span>{p.timeInRangePct == null ? "—" : fmtPct(p.timeInRangePct, 1)} in range</span>
+              <span>
+                {fmtNum(p.rebalanceCount)} rebalances
+                {/* pathA/pathB are totals across every managed position, so the split
+                    is only truthful next to a position when there is just the one.
+                    With two, each line would claim the other's rebalances. */}
+                {m.perPosition.length === 1 && (
+                  <span className="faint">
+                    {" "}
+                    ({m.pathA} atomic · {m.pathB} swap)
+                  </span>
+                )}
+              </span>
+              <span className="faint">last {fmtAgo(p.lastRebalanceAt)}</span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -254,28 +191,3 @@ export function MetricsTab() {
   );
 }
 
-function Tile({
-  label,
-  value,
-  valueNote,
-  sub,
-  cls,
-}: {
-  label: string;
-  value: string;
-  /** A secondary figure kept on the value line, for tiles whose sub carries prose. */
-  valueNote?: string;
-  sub?: string;
-  cls?: string;
-}) {
-  return (
-    <div className="tile">
-      <div className="label">{label}</div>
-      <div className={`value ${cls ?? ""}`}>
-        {value}
-        {valueNote && <span className="value-note">{valueNote}</span>}
-      </div>
-      {sub && <div className="faint">{sub}</div>}
-    </div>
-  );
-}

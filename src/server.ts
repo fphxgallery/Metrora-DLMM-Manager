@@ -20,12 +20,20 @@ import type { RebalanceDeps } from "./meteora/rebalance.js";
 import { cooldownFloor, lamportsOf, partitionRebalances } from "./metrics.js";
 import { aggregateByTs, downsample } from "./history.js";
 
-/** Chart windows offered by the METRICS tab, in milliseconds. */
+/**
+ * Chart windows offered by the METRICS tab, in milliseconds.
+ *
+ * ALL is Infinity rather than a large number: it means "back to the first thing
+ * we know about", which the response reports as `dataFrom`. Having it here as a
+ * timeframe is what lets the tab drop its separate all-time panel — the same
+ * figures over an unbounded window, rather than a second set of tiles.
+ */
 const TIMEFRAMES: Record<string, number> = {
   "24H": 86_400_000,
   "7D": 7 * 86_400_000,
   "30D": 30 * 86_400_000,
   "90D": 90 * 86_400_000,
+  ALL: Infinity,
 };
 
 /** Points per series in a history response — more than a chart can resolve is waste. */
@@ -227,6 +235,8 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
     const tf = String((req.query as { tf?: string }).tf ?? "24H").toUpperCase();
     const spanMs = TIMEFRAMES[tf] ?? TIMEFRAMES["24H"];
     const now = Date.now();
+    // Infinity for ALL: `now - Infinity` is -Infinity, which every timestamp is at
+    // or after, so the filters below simply keep everything.
     const from = now - spanMs;
 
     const positions = store.positions();
@@ -252,16 +262,29 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
     const spentBefore = ordered
       .filter((r) => r.ts < from)
       .reduce((a, r) => a + (r.costLamports + r.rentLamports) / 1_000_000_000, 0);
-    cost.unshift({ ts: from, usd: spentBefore * solPriceUsd });
+    // The left anchor sits at the window edge, except for ALL, where there is no
+    // edge — there it belongs at the first rebalance we know about.
+    const firstEventTs = ordered[0]?.ts;
+    cost.unshift({ ts: Number.isFinite(from) ? from : (firstEventTs ?? now), usd: spentBefore * solPriceUsd });
     cost.push({ ts: now, usd: running * solPriceUsd });
 
     const earliest = ctx.samples.earliest();
+    /**
+     * The oldest moment this response has anything to say about.
+     *
+     * The client plots from here rather than from the window edge, so asking for
+     * 90 days with a day of history does not draw 89 days of flat line and a spike
+     * at the right — a shape that reads as "nothing happened for three months".
+     * Cost reaches back further than samples do, since rebalance records carry
+     * their own timestamps and predate any sampling.
+     */
+    const dataFrom = Math.min(earliest ?? Infinity, firstEventTs ?? Infinity);
     return {
+      dataFrom: Number.isFinite(dataFrom) ? dataFrom : null,
       tf,
-      from,
+      /** null for ALL, which has no left edge — plot from `dataFrom` instead. */
+      from: Number.isFinite(from) ? from : null,
       to: now,
-      /** False when the sample log does not reach back to the start of the window. */
-      enough: earliest !== undefined && earliest <= from + ctx.cfg.sampleIntervalMin * 60_000,
       collectingSince: earliest ?? null,
       sampleIntervalMin: ctx.cfg.sampleIntervalMin,
       fees,
