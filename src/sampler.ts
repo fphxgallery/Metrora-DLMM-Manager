@@ -33,6 +33,22 @@ export class Sampler {
 
   constructor(private readonly deps: SamplerDeps) {}
 
+  /**
+   * How long after a rebalance the indexer's numbers are not to be trusted.
+   *
+   * `pnlUsd` is taken verbatim from the Data API, which is eventually
+   * consistent. Measured on the live position 2026-07-30: a path-B rebalance
+   * completed at 18:12:24 having moved 45.22 USDC out of the position and back;
+   * the sample ten seconds later read -$43.56 against +$1.32 before and +$1.72
+   * after. The swing of $44.88 is the withdrawn leg almost exactly — the indexer
+   * had seen the withdraw and not yet the deposit, and the sampler faithfully
+   * wrote down a number that was briefly wrong.
+   *
+   * Two minutes is generous next to the ten seconds observed, and costs at most
+   * one skipped reading out of a 15-minute cadence.
+   */
+  private static readonly SETTLE_MS = 120_000;
+
   /** Cheap to call every tick; does nothing until the interval has elapsed. */
   async maybeSample(now = Date.now()): Promise<void> {
     if (this.inFlight) return;
@@ -43,6 +59,26 @@ export class Sampler {
       this.lastTs = rows.length > 0 ? rows[rows.length - 1].ts : 0;
     }
     if (now - this.lastTs < this.deps.intervalMs) return;
+
+    /**
+     * Skipped as a WHOLE PASS, not per position, and `lastTs` is deliberately
+     * left alone so the next tick tries again.
+     *
+     * Dropping just the unsettled position would break the invariant the shared
+     * timestamp exists for: `aggregateByTs` sums every position at a ts, so a
+     * timestamp missing one of them reports a portfolio total short by that
+     * position's whole value — trading a spike on one line for a spike on the
+     * aggregate. A skipped pass is a gap, which the chart already handles.
+     */
+    const settling = this.recentlyRebalanced(now);
+    if (settling) {
+      this.deps.log.debug(
+        { positionPk: settling, sinceMs: now - (this.deps.store.position(settling)?.lastRebalanceAt ?? 0) },
+        "pnl sample skipped — a rebalance just landed and the indexer has not caught up",
+      );
+      return;
+    }
+
     this.inFlight = true;
     try {
       await this.sample(now);
@@ -52,6 +88,21 @@ export class Sampler {
     } finally {
       this.inFlight = false;
     }
+  }
+
+  /**
+   * The first managed position that rebalanced too recently to sample, or null.
+   *
+   * Keyed off `lastRebalanceAt`, which `recordRebalance` stamps on COMPLETION —
+   * so the window runs from when the funds finished moving, which is exactly
+   * when the indexer starts catching up.
+   */
+  private recentlyRebalanced(now: number): string | null {
+    for (const p of this.deps.store.positions()) {
+      const last = p.lastRebalanceAt;
+      if (last !== undefined && now - last < Sampler.SETTLE_MS) return p.positionPk;
+    }
+    return null;
   }
 
   private async sample(now: number): Promise<void> {
