@@ -889,3 +889,36 @@ table.wal td.num {
   stroke: var(--warn);
   stroke-width: 1.5;
 }
+
+/* ---------- position fact strip ---------- */
+
+/* One row of label/value pairs in place of two rows of tiles. Wraps rather than
+   overflowing, so a long value or a narrow window costs a line instead of a
+   horizontal scrollbar. */
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 22px;
+  align-items: baseline;
+  margin-top: 10px;
+}
+
+.fact {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.fact-k {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* The old tile's third line. Grey and small, so the figure stays the thing you read. */
+.fact-sub {
+  color: var(--text-faint);
+  font-size: 11px;
+}

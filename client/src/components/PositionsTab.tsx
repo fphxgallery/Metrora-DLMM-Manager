@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Settings } from "../api.ts";
-import { fmtAgo, fmtAmount, fmtNum, fmtPct, fmtPrice, fmtUsd, shortPk } from "../format.ts";
+import { fmtAgo, fmtAmount, fmtNum, fmtPct, fmtPrice, fmtUsd } from "../format.ts";
 import { WalletPanel } from "./WalletPanel.tsx";
 
 export interface PositionView {
@@ -235,11 +235,15 @@ function PositionCard({
     <div className="panel">
       <div className="row" style={{ justifyContent: "space-between" }}>
         <div className="row">
-          <b>{p.pairName}</b>
+          <b title={`position ${p.positionPk}\npool ${p.poolAddress}\nbins ${p.lowerBinId}…${p.upperBinId} · active ${p.activeBinId}`}>{p.pairName}</b>
           <span className="faint">bin step {p.binStep}</span>
           <span className={`pill ${p.inRange ? "good" : "bad"}`}>{p.inRange ? "IN RANGE" : "OUT OF RANGE"}</span>
           {p.managed?.auto && <span className="pill good">AUTO</span>}
           {drifted && <span className="pill warn">ONE-SIDED</span>}
+          <span style={{ marginLeft: 6 }}>{fmtUsd(p.valueUsd)}</span>
+          <span className="fact-sub">
+            {fmtAmount(p.amountX)} {p.tokenX.symbol} · {fmtAmount(p.amountY)} {p.tokenY.symbol}
+          </span>
         </div>
         <div className="row">
           <button
@@ -396,33 +400,99 @@ function PositionCard({
 
       <RangeBar p={p} defaultEdgeBufferBins={defaultEdgeBufferBins} />
 
-      <div className="group-label">Position</div>
-      <div className="tiles" style={{ marginTop: 6, marginBottom: 14 }}>
-        <Tile label="Value" value={fmtUsd(p.valueUsd)} sub={`${fmtAmount(p.amountX)} ${p.tokenX.symbol} · ${fmtAmount(p.amountY)} ${p.tokenY.symbol}`} />
-        <Tile label="Range" value={`${fmtPrice(p.minPrice)} – ${fmtPrice(p.maxPrice)}`} sub={`${fmtNum(p.widthBins)} bins · active ${fmtPrice(p.activePrice)}`} />
-      </div>
+      {/*
+        One strip of label/value pairs rather than two rows of tiles.
+        Tiles cost ~250px per position in whitespace and heading chrome, which is
+        most of a card, and the range bar above already carries the thing worth
+        looking at. Each fact keeps its old sub-caption, demoted to grey.
 
-      <div className="group-label">Performance</div>
-      <div className="tiles" style={{ marginTop: 6 }}>
-        <Tile
-          label="PnL"
-          value={p.pnl ? fmtUsd(p.pnl.pnlUsd) : "—"}
-          sub={p.pnl ? `${fmtPct(p.pnl.pnlPctChange)} · lifetime fees ${fmtUsd(p.pnl.allTimeFeesUsd)}` : "not indexed yet"}
+        Time-in-range is deliberately absent: the IN RANGE pill in the header
+        answers "is it in range now", and the historical percentage is on the
+        METRICS tab per position, so it is out of the card rather than out of the
+        app. The addresses that used to sit in a footer line are on the pair
+        name's tooltip.
+      */}
+      <div className="facts">
+        <Fact k="Range" v={`${fmtPrice(p.minPrice)} – ${fmtPrice(p.maxPrice)}`}>
+          {fmtNum(p.widthBins)} bins ·{" "}
+          {p.binsToEdge >= 0 ? `${p.binsToEdge} from edge` : `${-p.binsToEdge} outside`}
+        </Fact>
+        <Fact
+          k="PnL"
+          v={p.pnl ? fmtUsd(p.pnl.pnlUsd) : "—"}
           cls={p.pnl ? (p.pnl.pnlUsd >= 0 ? "good" : "bad") : undefined}
-        />
-        <Tile label="Unclaimed fees" value={fmtUsd(p.feesUsd)} sub={`${fmtAmount(p.feeX)} ${p.tokenX.symbol} · ${fmtAmount(p.feeY)} ${p.tokenY.symbol}`} />
-        <FeeTvlTile rate={p.feeRate} valueUsd={p.valueUsd} />
-        <TimeInRangeTile p={p} defaultEdgeBufferBins={defaultEdgeBufferBins} />
-      </div>
-
-      <div className="faint" style={{ marginTop: 10, fontSize: 11 }}>
-        {p.managed ? fmtNum(p.managed.rebalanceCount) : "—"} rebalances ·{" "}
-        {p.managed?.lastRebalanceAt ? fmtAgo(p.managed.lastRebalanceAt) : "never"} · position {shortPk(p.positionPk)} ·
-        pool {shortPk(p.poolAddress)} · bins {p.lowerBinId}…{p.upperBinId} · active {p.activeBinId} (
-        {p.binsToEdge >= 0 ? `${p.binsToEdge} from edge` : `${-p.binsToEdge} bins outside`})
+        >
+          {p.pnl ? `${fmtPct(p.pnl.pnlPctChange)} · lifetime ${fmtUsd(p.pnl.allTimeFeesUsd)}` : "not indexed yet"}
+        </Fact>
+        {/*
+          The accrual RATE, not the token split the old tile showed. Both are
+          useful, but the split runs to ~190px of digits and pushed the strip
+          onto a second row; the rate is what tells you whether the unclaimed
+          figure beside it is a morning's work or a week's. The split is on the
+          tooltip.
+        */}
+        <Fact
+          k="Fees"
+          v={fmtUsd(p.feesUsd)}
+          title={`unclaimed ${fmtAmount(p.feeX)} ${p.tokenX.symbol} · ${fmtAmount(p.feeY)} ${p.tokenY.symbol}`}
+        >
+          {feePerDayUsd(p) == null ? "unclaimed" : `≈ ${fmtUsd(feePerDayUsd(p)!)}/day`}
+        </Fact>
+        <Fact
+          k="Fee/TVL"
+          v={p.feeRate?.positionPctPer24h == null ? "—" : fmtPct(p.feeRate.positionPctPer24h)}
+          cls={feeRateCls(p.feeRate)}
+        >
+          {p.feeRate?.poolPctPer24h == null ? "24h" : `pool ${fmtPct(p.feeRate.poolPctPer24h)}`}
+        </Fact>
+        <Fact k="Rebalances" v={p.managed ? fmtNum(p.managed.rebalanceCount) : "—"}>
+          {p.managed?.lastRebalanceAt ? fmtAgo(p.managed.lastRebalanceAt) : "never"}
+        </Fact>
       </div>
     </div>
   );
+}
+
+/**
+ * One label/value pair in a position's fact strip, with its detail demoted.
+ *
+ * The tile this replaces gave each figure a bordered box and its own line; at
+ * six figures per position that was most of the card's height for no extra
+ * information. Same three parts, laid out inline.
+ */
+function Fact({
+  k,
+  v,
+  cls,
+  title,
+  children,
+}: {
+  k: string;
+  v: string;
+  cls?: string;
+  title?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <span className="fact" title={title}>
+      <span className="fact-k">{k}</span>
+      <span className={cls}>{v}</span>
+      {children && <span className="fact-sub">{children}</span>}
+    </span>
+  );
+}
+
+/** What the position earns per day at the indexer's own 24h fee/TVL rate. */
+function feePerDayUsd(p: PositionView): number | null {
+  const pct = p.feeRate?.positionPctPer24h;
+  if (pct == null || !(p.valueUsd > 0)) return null;
+  return (p.valueUsd * pct) / 100;
+}
+
+/** Green when the position out-earns the pool it sits in, which is the comparison that matters. */
+function feeRateCls(rate: PositionView["feeRate"]): string | undefined {
+  if (rate?.positionPctPer24h == null || rate.poolPctPer24h == null) return undefined;
+  return rate.positionPctPer24h >= rate.poolPctPer24h ? "good" : undefined;
 }
 
 /**
@@ -540,111 +610,10 @@ function clamp(n: number, min: number, max: number): number {
  * would while still paying to rebalance, which is the one failure this app can
  * cause and otherwise never surfaces.
  */
-function FeeTvlTile({ rate, valueUsd }: { rate: PositionView["feeRate"]; valueUsd: number }) {
-  const { positionPctPer24h, poolPctPer24h } = rate;
-  const own = positionPctPer24h ?? null;
-  // Nothing to show at all: the indexer has not seen this position and the pool
-  // metadata is missing too.
-  if (own == null && poolPctPer24h == null) {
-    return (
-      <div className="tile">
-        <div className="label">Fee / TVL · 24h</div>
-        <div className="value">—</div>
-        <div className="faint">not indexed yet</div>
-      </div>
-    );
-  }
 
-  // Falling back to the pool's rate is fine; presenting it as the position's is not.
-  const showing = own ?? poolPctPer24h!;
-  const isOwn = own != null;
-  const ahead = isOwn && poolPctPer24h != null ? showing >= poolPctPer24h : true;
-
-  // Headroom above whichever is larger, so the pool tick never sits on the edge
-  // where it reads as a full bar.
-  const scale = Math.max(showing, poolPctPer24h ?? 0) * 1.35 || 1;
-  const fillPct = Math.min(100, (showing / scale) * 100);
-  const poolPct = poolPctPer24h != null ? Math.min(100, (poolPctPer24h / scale) * 100) : null;
-
-  return (
-    <div className="tile">
-      <div className="label">{isOwn ? "Fee / TVL · 24h" : "Pool fee / TVL · 24h"}</div>
-      <div className={`value ${isOwn && poolPctPer24h != null ? (ahead ? "good" : "warn") : ""}`}>
-        {fmtPct(showing, 2)}
-      </div>
-      <div className="cmp tile-tail">
-        <div className="cmp-track">
-          <div className={`cmp-fill ${ahead ? "" : "low"}`} style={{ width: `${fillPct}%` }} />
-          {poolPct != null && isOwn && <div className="cmp-pool" style={{ left: `${poolPct}%` }} />}
-        </div>
-        <div className="cmp-labels">
-          <span>≈ {fmtUsd((showing / 100) * valueUsd)} / day</span>
-          {poolPctPer24h != null && isOwn && <span>pool {fmtPct(poolPctPer24h, 2)}</span>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Tile({ label, value, sub, cls }: { label: string; value: string; sub?: string; cls?: string }) {
-  return (
-    <div className="tile">
-      <div className="label">{label}</div>
-      <div className={`value ${cls ?? ""}`}>{value}</div>
-      {sub && <div className="faint tile-tail">{sub}</div>}
-    </div>
-  );
-}
 
 /**
  * "Bins to trigger" is distance to the actual rebalance trigger (the edge-buffer
  * zone), not the raw range edge — same `edgeBufferBins` fallback as RangeBar so
  * the two stay consistent about what decides when a rebalance fires.
  */
-function TimeInRangeTile({ p, defaultEdgeBufferBins }: { p: PositionView; defaultEdgeBufferBins: number | null }) {
-  const edgeBufferBins = p.managed?.edgeBufferBins ?? defaultEdgeBufferBins ?? Math.round(p.widthBins * 0.15);
-  const halfWidth = Math.max(1, Math.round(p.widthBins / 2));
-  const maxDistance = Math.max(1, halfWidth - edgeBufferBins);
-  const binsFromTrigger = Math.max(0, p.binsToEdge - edgeBufferBins);
-  const proximityPct = clamp((binsFromTrigger / maxDistance) * 100, 0, 100);
-  const barColor = !p.inRange ? "var(--bad)" : proximityPct <= 20 ? "var(--warn)" : "var(--good)";
-
-  return (
-    <div className="tile">
-      <div className="label">Time in range</div>
-      <div className="value">{p.managed?.timeInRangePct != null ? fmtPct(p.managed.timeInRangePct, 1) : "—"}</div>
-      <div className="faint">
-        {p.managed?.openedAt ? `opened ${fmtAgo(p.managed.openedAt)}` : p.managed ? "since managed" : "not managed"}
-      </div>
-      {p.managed && (
-        <div className="tile-tail">
-          <div
-            style={{
-              marginTop: 8,
-              height: 4,
-              borderRadius: 2,
-              background: "var(--border)",
-              position: "relative",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: 0,
-                top: 0,
-                bottom: 0,
-                width: `${proximityPct}%`,
-                background: barColor,
-                borderRadius: 2,
-              }}
-            />
-          </div>
-          <div className="faint" style={{ fontSize: 10, marginTop: 4 }}>
-            {p.inRange ? `${fmtNum(binsFromTrigger)} of ${fmtNum(maxDistance)} bins to trigger` : "out of range"}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
