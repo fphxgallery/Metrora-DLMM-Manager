@@ -56,6 +56,7 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
     for (const { key } of NUMERIC_FIELDS) f[key] = String(s.config[key] ?? "");
     f.STRATEGY_TYPE = String(s.config.STRATEGY_TYPE ?? "Spot");
     f.AUTO_TOPUP = s.config.AUTO_TOPUP ? "true" : "false";
+    f.APE_AUTO_MANAGE = s.config.APE_AUTO_MANAGE ? "true" : "false";
     setForm(f);
   }
 
@@ -139,6 +140,22 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
             </select>
             <span className="faint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
               With it off, a dry buffer is a log line and a Telegram alert; the rebalance still proceeds either way.
+            </span>
+          </label>
+          <label className="field">
+            <span>Ape auto-manage</span>
+            {/* Same reason as Auto top-up: a select, because anything the parser
+                doesn't recognise as true silently becomes false. */}
+            <select
+              value={form.APE_AUTO_MANAGE ?? "false"}
+              onChange={(e) => setForm({ ...form, APE_AUTO_MANAGE: e.target.value })}
+            >
+              <option value="false">OFF — Ape opens it unmanaged</option>
+              <option value="true">ON — Ape enrols it in auto-rebalance</option>
+            </select>
+            <span className="faint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
+              Everything else Ape uses — strategy, range, swap slippage, impact ceiling — is the value above, not a
+              separate copy.
             </span>
           </label>
           {NUMERIC_FIELDS.map((f) => (

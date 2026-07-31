@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api.ts";
 import { BinChart, type Bin } from "./BinChart.tsx";
+import { ApeForm } from "./ApeForm.tsx";
 import { OpenPositionForm } from "./OpenPositionForm.tsx";
 import { fmtNum, fmtPct, fmtPrice, fmtUsd } from "../format.ts";
 
@@ -61,6 +62,9 @@ export function PoolsTab() {
   const [minTvl, setMinTvl] = useState("10000");
   const [rows, setRows] = useState<PoolRow[]>([]);
   const [selected, setSelected] = useState<PoolDetail | null>(null);
+  // Ape replaces the open form rather than sitting beside it — two ways to spend
+  // the same wallet, side by side, is a way to click the wrong one.
+  const [aping, setAping] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -189,24 +193,45 @@ export function PoolsTab() {
 
       {selected && (
         <>
-          <PoolDetailPanel detail={selected} onClose={() => setSelected(null)} />
-          <OpenPositionForm pool={selected} onOpened={() => void select(selected.address)} />
+          <PoolDetailPanel detail={selected} onClose={() => setSelected(null)} onApe={() => setAping(true)} />
+          {aping ? (
+            <ApeForm
+              pool={selected}
+              onOpened={() => void select(selected.address)}
+              onClose={() => setAping(false)}
+            />
+          ) : (
+            <OpenPositionForm pool={selected} onOpened={() => void select(selected.address)} />
+          )}
         </>
       )}
     </>
   );
 }
 
-function PoolDetailPanel({ detail, onClose }: { detail: PoolDetail; onClose: () => void }) {
+function PoolDetailPanel({
+  detail,
+  onClose,
+  onApe,
+}: {
+  detail: PoolDetail;
+  onClose: () => void;
+  onApe: () => void;
+}) {
   return (
     <div className="panel">
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>
           {detail.name} <span className="faint">bin step {detail.binStep}</span>
         </h2>
-        <button className="btn" onClick={onClose}>
-          CLOSE
-        </button>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn primary" onClick={onApe}>
+            APE
+          </button>
+          <button className="btn" onClick={onClose}>
+            CLOSE
+          </button>
+        </div>
       </div>
 
       <div className="tiles" style={{ margin: "12px 0" }}>

@@ -53,6 +53,19 @@ export interface Config {
   /** Hard ceiling on a single top-up, so a mispriced quote cannot drain the wallet. */
   maxTopUpUsd: number;
 
+  // --- ape ---
+  /**
+   * Whether a position opened by "Ape" is enrolled in auto-rebalancing straight
+   * away.
+   *
+   * Off by default, matching the open form's own default: an ape is a one-click
+   * action, and one click should not quietly hand a new position to the engine.
+   * Everything else Ape needs — shape, width, slippage, impact ceiling — is
+   * borrowed from the rebalance settings rather than duplicated, so an Ape'd
+   * position is one the automation would have built itself.
+   */
+  apeAutoManage: boolean;
+
   // --- pnl history ---
   /** How often each managed position's PnL is written to the sample log. */
   sampleIntervalMin: number;
@@ -133,6 +146,8 @@ export function loadConfig(): Config {
     // Twice the default floor. A top-up is meant to cover rounding, so anything
     // approaching this ceiling means the price or the balance read is wrong.
     maxTopUpUsd: num("MAX_TOPUP_USD", 5),
+
+    apeAutoManage: bool("APE_AUTO_MANAGE", false),
 
     // 15 minutes gives 96 readings a day — a dense 24h chart at ~8,600 rows per
     // position over the 90-day window, which is nothing as an appended log and
