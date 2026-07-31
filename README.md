@@ -139,6 +139,8 @@ would attach an absurd priority fee to every transaction).
 | `MIN_QUOTE_BALANCE_USD` | `1` | Quote-token balance to keep idle in the wallet — see below. `0` disables |
 | `AUTO_TOPUP` | `true` | Swap a little SOL to refill that buffer. `false` warns instead |
 | `MAX_TOPUP_USD` | `5` | Ceiling on a single top-up. Must be `>= MIN_QUOTE_BALANCE_USD` |
+| `APE_AUTO_MANAGE` | `false` | Whether a position opened by APE is enrolled in auto-rebalancing straight away |
+| `ZAP_OUT_TO` | `y` | Which side ZAP OUT consolidates into — `y` (quote) or `x` (base). A side, not a named token |
 | `API_TOKEN` | unset | Bearer token for every mutating endpoint and the login gate |
 | `ENABLE_WALLET_UI` | `false` | Allow creating/importing a key from the browser (needs `API_TOKEN`) |
 
@@ -236,6 +238,69 @@ Two more things the defaults assume, both worth checking against your own pool:
 
 `RANGE_BINS` only applies to **new** positions; a rebalance re-centres at the position's existing
 width. To widen a position you already hold, exit and reopen it.
+
+## Ape — one token in, a position out
+
+`APE` on an inspected pool opens a two-sided position from a single token. A DLMM position centred
+on the active bin wants roughly equal *value* per side — bins below the active price hold the quote
+token, bins above hold the base token, and a symmetric range has equally many of each — so Ape swaps
+half the input for the other side and deposits both.
+
+Half is an approximation, not an identity. Where the price sits inside its own bin, and how the
+strategy weights bins, move the true split a little off 50/50. The residue is cents, it stays in the
+wallet (which is where the quote buffer lives anyway), and a position that opens meaningfully
+lopsided is exactly what path B already corrects. Solving it precisely would be a lot of arithmetic
+to save a rounding error.
+
+**It borrows the rebalancer's settings rather than keeping its own.** `STRATEGY_TYPE` shapes the
+position, `RANGE_BINS` sets its width, `SWAP_SLIPPAGE_BPS` governs the half-swap and
+`MAX_SWAP_PRICE_IMPACT_BPS` refuses a bad route — the same values, so an Ape'd position is one the
+automation would have built itself. Only `APE_AUTO_MANAGE` is new. Note the consequence: retuning
+`SWAP_SLIPPAGE_BPS` for Ape also retunes the rebalance swap leg.
+
+The button previews before it spends. `POST /api/positions/ape/preview` costs a Jupiter quote and no
+fee, and returns the swap it would make, the range it would land in and what it would cost;
+`POST /api/positions/ape` re-quotes and executes. That is two clicks rather than one on purpose — the
+quote is the only place the swap's real price and impact appear, so showing it beats spending first
+and reporting after. Every guard has already passed by the time CONFIRM is live.
+
+Under `DRY_RUN` the swap is simulated and nothing is sent, and the open leg is **not** simulated: it
+would deposit proceeds the swap never actually produced, so it would fail on a balance that was never
+credited. Path B's dry-run stops at the same boundary for the same reason.
+
+There is no journal entry for an ape. A journal is keyed to a position that exists, and here the
+position is what is being created — there is nothing to resume into. What matters instead is that a
+failure *after* the swap reports exactly what the wallet now holds, since that is the state you would
+recover from by hand.
+
+## Zap out — close a position and hold one token
+
+`ZAP OUT` on a position does what `EXIT` does — removes all liquidity, claims fees, closes the
+account and reclaims its rent — and then swaps the side you did not want, so you end up holding a
+single token.
+
+`ZAP_OUT_TO` picks that token as a **side of the pool** (`y`, the quote, by default) rather than a
+named mint. Meteora's own control offers a fixed SOL/USDC choice, which works because it assumes
+those are the universal quote tokens; this app manages arbitrary X/Y pools, where "SOL" means nothing
+on a pair containing neither. The side is overridable per position at the moment you zap.
+
+**The ordering is the opposite of Ape's, and it is the reason the preview exists.** Ape swaps first,
+so a failed swap costs a fee and nothing else — you still hold what you started with. Zap out
+*closes first*, so a swap failing afterwards leaves the position gone and both tokens in the wallet.
+The route is therefore quoted and impact-checked **before** anything closes: a position that cannot
+be routed out is one that stays open. If the swap does fail after the close, the error names both
+balances, because that is the state you would recover from by hand.
+
+Two guards it inherits rather than reinvents. It refuses while a journal entry is pending for that
+position — an unresolved entry means some of that position's funds are already in the wallet
+mid-flight, and consolidating around them would sweep up funds the rebalancer is still placing. And
+the amount it swaps is capped at what the *position* held, never the raw wallet delta: closing also
+returns the position's rent, which for a wSOL side lands as native SOL and would otherwise be sold
+along with everything else. The rent should come back as SOL.
+
+A position already entirely in the target token skips the swap and is simply an exit. Under
+`DRY_RUN` the exit is simulated and the swap leg is not, for the same reason Ape's open leg isn't:
+it would sell tokens the exit never actually released.
 
 ## Does the automation pay?
 
