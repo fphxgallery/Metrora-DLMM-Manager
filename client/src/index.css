@@ -881,3 +881,11 @@ table.wal td.num {
   flex-direction: column;
   justify-content: space-between;
 }
+
+/* A PnL reading kept out of the axis scale (see isolatedSpikes). Hollow, so it
+   reads as an annotation on the line rather than another data point. */
+.dot-clipped {
+  fill: none;
+  stroke: var(--warn);
+  stroke-width: 1.5;
+}

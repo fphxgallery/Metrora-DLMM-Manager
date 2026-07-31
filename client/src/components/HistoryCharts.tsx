@@ -44,6 +44,39 @@ const R = 694;
 const TOP = 20;
 
 /**
+ * Indices of values that are lone spikes, for exclusion from the axis scale.
+ *
+ * Deliberately narrow. A point qualifies only when it is far from the median by
+ * a ROBUST measure (median absolute deviation, which a single outlier cannot
+ * inflate the way a standard deviation can) AND neither neighbour is also far
+ * out. That second condition is what keeps this honest: a real drawdown moves
+ * several consecutive samples, so it never qualifies and always sets the scale.
+ * Only a one-sample blip — which is what an eventually-consistent indexer
+ * produces mid-rebalance — is taken out, and it is still drawn.
+ */
+export function isolatedSpikes(values: number[]): Set<number> {
+  const out = new Set<number>();
+  // Under a handful of points there is no "typical" to be atypical of.
+  if (values.length < 5) return out;
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = (xs: number[]) => xs[Math.floor(xs.length / 2)];
+  const median = mid(sorted);
+  const mad = mid([...values].map((v) => Math.abs(v - median)).sort((a, b) => a - b));
+  // A flat series has MAD 0, which would make every wobble infinitely far out;
+  // the floor keeps the test meaningful on a line sitting near a constant.
+  const spread = Math.max(mad, Math.abs(median) * 0.05, 0.01);
+  const far = (v: number | undefined) => v !== undefined && Math.abs(v - median) > 8 * spread;
+
+  for (let i = 0; i < values.length; i++) {
+    if (!far(values[i])) continue;
+    if (far(values[i - 1]) || far(values[i + 1])) continue;
+    out.add(i);
+  }
+  return out;
+}
+
+/**
  * Round gridline values covering 0..max.
  *
  * Slicing the maximum into equal fractions gives labels like "$0.8709" — every
@@ -225,10 +258,22 @@ function PayChart({
 }) {
   const BOT = 150;
   const TICK = 164;
+  // A lone PnL reading can be an indexer artefact rather than a loss — the Data
+  // API is eventually consistent, and a sample taken just after a rebalance can
+  // catch it having seen the withdraw but not the deposit. One such point is
+  // enough to set the whole axis: a -$43 blip flattened a day of real $0-1 data
+  // into a cliff. Those points are kept OUT of the scale, and still drawn.
+  const spikes = isolatedSpikes(pnl.map((p) => p.usd));
+
   // One axis for all three series. It has to reach below zero, because PnL can be
   // negative and fees and cost never are — so $0 is a line through the plot rather
   // than its floor.
-  const all = [...fees.map((p) => p.usd), ...cost.map((p) => p.usd), ...pnl.map((p) => p.usd), 0];
+  const all = [
+    ...fees.map((p) => p.usd),
+    ...cost.map((p) => p.usd),
+    ...pnl.filter((_, i) => !spikes.has(i)).map((p) => p.usd),
+    0,
+  ];
   const lo = Math.min(...all);
   const hi = Math.max(...all, 0.01);
   const pad = (hi - lo) * 0.08 || 0.01;
@@ -236,7 +281,11 @@ function PayChart({
   const max = hi + pad;
   const ticks = niceTicks(min, max);
   const x = (ts: number) => L + ((ts - from) / Math.max(1, to - from)) * (R - L);
-  const y = (usd: number) => BOT - ((usd - min) / (max - min)) * (BOT - TOP);
+  // Clamped to the plot box, so an excluded spike renders ON the edge rather
+  // than escaping the viewBox. It stays visible — it just cannot rescale
+  // everything else.
+  const y = (usd: number) =>
+    Math.max(TOP, Math.min(BOT, BOT - ((usd - min) / (max - min)) * (BOT - TOP)));
 
   const feeLine = fees.map((p) => `${x(p.ts)},${y(p.usd)}`).join(" ");
   // Cost is a STEP: it only moves when a rebalance lands, and a smooth line would
@@ -258,6 +307,9 @@ function PayChart({
     return best.usd;
   };
   const pnlLine = pnl.map((p) => `${x(p.ts)},${y(p.usd)}`).join(" ");
+  // Drawn where the line meets the edge, with the real figure in the title, so a
+  // clipped reading reads as "off the scale" rather than as a genuine floor.
+  const clipped = [...spikes].map((i) => ({ ...pnl[i], cx: x(pnl[i].ts), cy: y(pnl[i].usd) }));
 
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -310,6 +362,14 @@ function PayChart({
                 className="fill-pnl"
               />
               <polyline points={pnlLine} className="line-pnl-band" />
+              {/* An excluded spike sits ON the plot edge; the ring and its title
+                  say so, so the reading is visibly off the scale rather than
+                  quietly flattened. */}
+              {clipped.map((c) => (
+                <circle key={c.ts} cx={c.cx} cy={c.cy} r={3} className="dot-clipped">
+                  <title>{`${signedUsd(c.usd)} — off the scale, usually the indexer mid-rebalance`}</title>
+                </circle>
+              ))}
             </>
           )}
 
