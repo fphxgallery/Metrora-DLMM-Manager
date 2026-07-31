@@ -109,6 +109,28 @@ export function PositionsTab() {
   );
 }
 
+interface ZapOutPlan {
+  to: "x" | "y";
+  toSymbol: string;
+  fromSymbol: string;
+  amountTo: number;
+  amountFrom: number;
+  needsSwap: boolean;
+  quotedOut: number;
+  totalOut: number;
+  priceImpactBps: number;
+  route: string | null;
+  rentLamports: number;
+  estCostUsd: number;
+}
+
+interface ZapOutResult {
+  plan: ZapOutPlan;
+  dryRun: boolean;
+  received?: number;
+  note?: string;
+}
+
 function PositionCard({
   p,
   onChanged,
@@ -123,6 +145,65 @@ function PositionCard({
   const [logs, setLogs] = useState<string[] | null>(null);
   const [ok, setOk] = useState("");
   const [confirmExit, setConfirmExit] = useState(false);
+  // Zap out closes the position BEFORE it swaps, so the preview is not a
+  // nicety: it is where an unroutable position is refused while it still
+  // exists. There is deliberately no way to confirm without one.
+  const [zapPlan, setZapPlan] = useState<ZapOutPlan | null>(null);
+  const [zapping, setZapping] = useState(false);
+
+  async function previewZap(to?: "x" | "y") {
+    setBusy("zap");
+    setError("");
+    setLogs(null);
+    setOk("");
+    setZapPlan(null);
+    try {
+      setZapPlan(
+        await api.post<ZapOutPlan>(`/api/positions/${p.positionPk}/zap-out/preview`, {
+          poolAddress: p.poolAddress,
+          ...(to ? { to } : {}),
+        }),
+      );
+      setZapping(true);
+    } catch (e) {
+      const err = e as { message?: string; logs?: string[] };
+      setError(err.message ?? String(e));
+      setLogs(err.logs ?? null);
+      setZapping(false);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function confirmZap() {
+    if (!zapPlan) return;
+    setBusy("zap");
+    setError("");
+    setLogs(null);
+    setOk("");
+    try {
+      const res = await api.post<ZapOutResult>(`/api/positions/${p.positionPk}/zap-out`, {
+        poolAddress: p.poolAddress,
+        to: zapPlan.to,
+      });
+      setOk(
+        res.dryRun
+          ? (res.note ?? "DRY-RUN simulated ok, nothing sent")
+          : `Zapped out to ${fmtAmount((res.received ?? 0) + res.plan.amountTo)} ${res.plan.toSymbol}` +
+            ` · rent back ${(res.plan.rentLamports / 1e9).toFixed(5)} SOL`,
+      );
+      setZapping(false);
+      setZapPlan(null);
+      onChanged();
+    } catch (e) {
+      const err = e as { message?: string; logs?: string[] };
+      setError(err.message ?? String(e));
+      setLogs(err.logs ?? null);
+    } finally {
+      setBusy("");
+    }
+  }
+
 
   async function act(name: string, path: string, body: Record<string, unknown> = {}) {
     setBusy(name);
@@ -187,6 +268,9 @@ function PositionCard({
           >
             {busy === "rebalance" ? "…" : "REBALANCE"}
           </button>
+          <button className="btn" disabled={anyBusy} onClick={() => void previewZap()}>
+            {busy === "zap" && !zapping ? "…" : "ZAP OUT"}
+          </button>
           {confirmExit ? (
             <>
               <button
@@ -214,6 +298,94 @@ function PositionCard({
           position account. It cannot be undone — reopening costs rent again.
         </div>
       )}
+      {zapping && zapPlan && (
+        <div className="msg" style={{ borderColor: "var(--warn)" }}>
+          <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="faint">RECEIVE</span>
+            <div className="segmented">
+              {(["x", "y"] as const).map((side) => (
+                <button
+                  key={side}
+                  type="button"
+                  className={zapPlan.to === side ? "active" : ""}
+                  disabled={anyBusy}
+                  onClick={() => void previewZap(side)}
+                >
+                  {side === "x" ? p.tokenX.symbol : p.tokenY.symbol}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            {zapPlan.needsSwap ? (
+              <>
+                <span className="chip">
+                  <span className="sym">SWAP</span>
+                  <span className="amt">
+                    {fmtAmount(zapPlan.amountFrom)} {zapPlan.fromSymbol}
+                  </span>
+                </span>
+                <span className="faint">→</span>
+                <span className="chip">
+                  <span className="sym">FOR</span>
+                  <span className="amt">
+                    {fmtAmount(zapPlan.quotedOut)} {zapPlan.toSymbol}
+                  </span>
+                </span>
+                <span className="faint" style={{ textTransform: "none", letterSpacing: 0 }}>
+                  impact {(zapPlan.priceImpactBps / 100).toFixed(2)}%
+                  {zapPlan.route ? ` · via ${zapPlan.route}` : ""}
+                </span>
+              </>
+            ) : (
+              <span className="faint" style={{ textTransform: "none", letterSpacing: 0 }}>
+                Already entirely in {zapPlan.toSymbol} — no swap needed, this is just an exit.
+              </span>
+            )}
+          </div>
+
+          <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="chip">
+              <span className="sym">YOU RECEIVE</span>
+              <span className="amt">
+                {fmtAmount(zapPlan.totalOut)} {zapPlan.toSymbol}
+              </span>
+            </span>
+            <span className="chip">
+              <span className="sym">RENT BACK</span>
+              <span className="amt">{(zapPlan.rentLamports / 1e9).toFixed(5)} SOL</span>
+            </span>
+            <span className="chip">
+              <span className="sym">EST. COST</span>
+              <span className="amt">{fmtUsd(zapPlan.estCostUsd)}</span>
+            </span>
+          </div>
+
+          <div style={{ marginBottom: 10 }}>
+            <span className="warn">Zap out</span> closes the position and reclaims its rent, then swaps. The swap
+            happens <b>after</b> the close — if the route fails you keep both tokens and the position is already gone.
+            It cannot be undone.
+          </div>
+
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn danger" disabled={anyBusy} onClick={() => void confirmZap()}>
+              {busy === "zap" ? "…" : `CONFIRM — CLOSE & SWAP TO ${zapPlan.toSymbol}`}
+            </button>
+            <button
+              className="btn"
+              disabled={anyBusy}
+              onClick={() => {
+                setZapping(false);
+                setZapPlan(null);
+              }}
+            >
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
+
       {ok && <div className="msg ok">{ok}</div>}
       {error && <div className="msg err">{error}</div>}
       {logs && (

@@ -66,6 +66,18 @@ export interface Config {
    */
   apeAutoManage: boolean;
 
+  // --- zap out ---
+  /**
+   * Which side of the pool a zap out consolidates into.
+   *
+   * A SIDE, not a named mint. Meteora's own control offers a fixed SOL/USDC
+   * choice, which works because it assumes those are the universal quote
+   * tokens; this app manages arbitrary X/Y pools, where "SOL" means nothing on a
+   * pair that contains neither. "y" — the quote side, usually the stable — is
+   * the default and the one that generalises.
+   */
+  zapOutTo: "x" | "y";
+
   // --- pnl history ---
   /** How often each managed position's PnL is written to the sample log. */
   sampleIntervalMin: number;
@@ -148,6 +160,7 @@ export function loadConfig(): Config {
     maxTopUpUsd: num("MAX_TOPUP_USD", 5),
 
     apeAutoManage: bool("APE_AUTO_MANAGE", false),
+    zapOutTo: str("ZAP_OUT_TO", "y") as Config["zapOutTo"],
 
     // 15 minutes gives 96 readings a day — a dense 24h chart at ~8,600 rows per
     // position over the 90-day window, which is nothing as an appended log and
@@ -222,6 +235,9 @@ function validate(cfg: Config): void {
     throw new Error(
       `EDGE_BUFFER_BINS (${cfg.edgeBufferBins}) must be < RANGE_BINS (${cfg.rangeBins}) — otherwise every position is "near the edge" the moment it opens and rebalances forever`,
     );
+  }
+  if (cfg.zapOutTo !== "x" && cfg.zapOutTo !== "y") {
+    throw new Error(`ZAP_OUT_TO must be "x" (base) or "y" (quote); got "${cfg.zapOutTo}"`);
   }
   if (cfg.cooldownMin < 0) throw new Error(`COOLDOWN_MIN must be >= 0 (got ${cfg.cooldownMin})`);
   if (cfg.minQuoteBalanceUsd < 0) {

@@ -42,6 +42,7 @@ import { registerPoolRoutes } from "./routes/pools.js";
 import { registerPositionRoutes } from "./routes/positions.js";
 import { registerWalletTokenRoutes } from "./routes/wallet.js";
 import { registerApeRoutes } from "./routes/ape.js";
+import { registerZapOutRoutes } from "./routes/zapout.js";
 import { isAutoRebalance, isDryRun, type AppContext } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -80,6 +81,7 @@ const EDITABLE_KEYS = new Set([
   "AUTO_TOPUP",
   "MAX_TOPUP_USD",
   "APE_AUTO_MANAGE",
+  "ZAP_OUT_TO",
   // POLL_INTERVAL_MS is deliberately absent: the engine captures it once into
   // setInterval, so editing it here would not take effect until a restart anyway.
 ]);
@@ -309,6 +311,7 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
   // RebalanceDeps is a superset of ApeDeps — same client, sender, swapper and
   // store — so Ape runs on exactly the machinery the rebalancer does.
   registerApeRoutes(app, rebalanceDeps);
+  registerZapOutRoutes(app, rebalanceDeps);
 
   // ---------------------------------------------------------------- logs ----
 
@@ -355,6 +358,7 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       AUTO_TOPUP: cfg.autoTopUp,
       MAX_TOPUP_USD: cfg.maxTopUpUsd,
       APE_AUTO_MANAGE: cfg.apeAutoManage,
+      ZAP_OUT_TO: cfg.zapOutTo,
       POLL_INTERVAL_MS: cfg.pollIntervalMs,
       DRY_RUN: isDryRun(ctx),
       CLUSTER: cfg.cluster,

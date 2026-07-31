@@ -57,6 +57,7 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
     f.STRATEGY_TYPE = String(s.config.STRATEGY_TYPE ?? "Spot");
     f.AUTO_TOPUP = s.config.AUTO_TOPUP ? "true" : "false";
     f.APE_AUTO_MANAGE = s.config.APE_AUTO_MANAGE ? "true" : "false";
+    f.ZAP_OUT_TO = String(s.config.ZAP_OUT_TO ?? "y");
     setForm(f);
   }
 
@@ -156,6 +157,17 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
             <span className="faint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
               Everything else Ape uses — strategy, range, swap slippage, impact ceiling — is the value above, not a
               separate copy.
+            </span>
+          </label>
+          <label className="field">
+            <span>Zap out to</span>
+            <select value={form.ZAP_OUT_TO ?? "y"} onChange={(e) => setForm({ ...form, ZAP_OUT_TO: e.target.value })}>
+              <option value="y">QUOTE — the pool's Y side, usually the stable</option>
+              <option value="x">BASE — the pool's X side</option>
+            </select>
+            <span className="faint" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11 }}>
+              A side, not a named token, so it means something on any pair. Overridable per position at the moment you
+              zap.
             </span>
           </label>
           {NUMERIC_FIELDS.map((f) => (
