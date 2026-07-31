@@ -398,6 +398,21 @@ The cost curve is the exception: every rebalance record already carries its own 
 exact right back to the first rebalance even on a fresh install. On `ALL` you will see the cost step
 begin before the fee line does, for exactly that reason.
 
+**Sampling pauses for two minutes after a rebalance.** `pnlUsd` is whatever the Data API says, and
+that indexer is eventually consistent: a sample taken just after a path-B rebalance can catch it
+having seen the withdraw but not yet the deposit, and report the position as worth the withdrawn leg
+less than it is. Observed live — a rebalance moved 45.22 USDC out and back, and the sample ten
+seconds later read −$43.56 against +$1.32 either side. The pass is skipped whole rather than per
+position, because a timestamp missing one position would understate the portfolio total by that
+position's entire value, and the reading is retried on the next tick rather than waiting out another
+full interval.
+
+The chart guards the same failure from the other end: a PnL reading that is a **lone** spike is kept
+out of the axis scale, so one bad point cannot flatten a day of real data into a cliff. It is still
+drawn, clipped to the plot edge with a marker naming the real figure. The test is deliberately narrow
+— a point qualifies only if its neighbours are normal, so a genuine drawdown, which moves several
+consecutive samples, always sets the scale as before.
+
 One accounting rule worth knowing: cost and fee income are always drawn from the **same set of
 positions**. Fee income can only be read for positions still managed, so spending on closed positions
 is reported separately instead of being charged against a current position's earnings.
