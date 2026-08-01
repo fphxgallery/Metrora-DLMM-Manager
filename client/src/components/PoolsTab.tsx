@@ -281,17 +281,25 @@ function PoolDetailPanel({
         </div>
       </div>
 
-      <div className="tiles" style={{ margin: "12px 0" }}>
-        <Tile label="Active price" value={fmtPrice(detail.activePrice)} sub={`bin ${detail.activeBinId}`} />
-        <Tile label="Fee now" value={fmtPct(detail.totalFeePct)} sub={`base ${fmtPct(detail.baseFeePct)} + var ${fmtPct(detail.variableFeePct)}`} />
-        <Tile label="TVL" value={detail.tvl == null ? "—" : fmtUsd(detail.tvl)} />
-        <Tile label="Vol 24h" value={detail.volume24h == null ? "—" : fmtUsd(detail.volume24h)} />
-        <Tile label="Fees 24h" value={detail.fees24h == null ? "—" : fmtUsd(detail.fees24h)} />
+      {/* One strip of label/value pairs rather than a grid of tiles — same trade
+          made for the position card (PositionsTab's .facts): six tiles cost most
+          of a card's height in whitespace and heading chrome for figures that
+          read fine on one line. */}
+      <div className="facts" style={{ marginBottom: 12 }}>
+        <Fact k="Active price" v={fmtPrice(detail.activePrice)} sub={`bin ${detail.activeBinId}`} />
+        <Fact
+          k="Fee now"
+          v={fmtPct(detail.totalFeePct)}
+          sub={`base ${fmtPct(detail.baseFeePct)} + var ${fmtPct(detail.variableFeePct)}`}
+        />
+        <Fact k="TVL" v={detail.tvl == null ? "—" : fmtUsd(detail.tvl)} />
+        <Fact k="Vol 24h" v={detail.volume24h == null ? "—" : fmtUsd(detail.volume24h)} />
+        <Fact k="Fees 24h" v={detail.fees24h == null ? "—" : fmtUsd(detail.fees24h)} />
         {/* Not an APY: Meteora's own annualised figure is naive compounding of this
             same daily rate, and on a thin pool with one good day it overflows to
             nonsense (up to their 2^64-1 sentinel). This daily rate is the number
             that's actually true right now. */}
-        <Tile label="Fee/TVL 24h" value={detail.feeTvlDailyPct == null ? "—" : fmtPct(detail.feeTvlDailyPct, 3)} />
+        <Fact k="Fee/TVL 24h" v={detail.feeTvlDailyPct == null ? "—" : fmtPct(detail.feeTvlDailyPct, 3)} />
       </div>
 
       <BinChart
@@ -311,12 +319,14 @@ function PoolDetailPanel({
   );
 }
 
-function Tile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+/** One label/value pair in the pool's fact strip. Shares CSS with the position
+    card's identical pattern (`.facts`/`.fact` in index.css). */
+function Fact({ k, v, sub }: { k: string; v: string; sub?: string }) {
   return (
-    <div className="tile">
-      <div className="label">{label}</div>
-      <div className="value">{value}</div>
-      {sub && <div className="faint">{sub}</div>}
-    </div>
+    <span className="fact">
+      <span className="fact-k">{k}</span>
+      <span>{v}</span>
+      {sub && <span className="fact-sub">{sub}</span>}
+    </span>
   );
 }

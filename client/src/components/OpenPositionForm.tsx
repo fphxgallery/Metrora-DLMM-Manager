@@ -121,8 +121,11 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
         </label>
       </div>
 
-      <div className="grid-2">
-        <label className="field">
+      {/* One row instead of a 2x2 grid — four fields read fine side by side, and
+          the row this replaced cost a full extra line of height for nothing the
+          fields themselves needed. */}
+      <div className="row" style={{ gap: 16, alignItems: "flex-start" }}>
+        <label className="field" style={{ flex: 2, minWidth: 140, marginBottom: 0 }}>
           <span>{pool.tokenX.symbol} amount</span>
           <input
             value={xAmount}
@@ -134,7 +137,7 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
           />
           <BalanceHint amount={pool.walletBalances?.x} symbol={pool.tokenX.symbol} priceUsd={pool.tokenX.priceUsd} />
         </label>
-        <label className="field">
+        <label className="field" style={{ flex: 2, minWidth: 140, marginBottom: 0 }}>
           <span>{pool.tokenY.symbol} amount</span>
           <input
             value={yAmount}
@@ -146,11 +149,11 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
           />
           <BalanceHint amount={pool.walletBalances?.y} symbol={pool.tokenY.symbol} priceUsd={pool.tokenY.priceUsd} />
         </label>
-        <label className="field">
+        <label className="field" style={{ flex: 1, minWidth: 80, marginBottom: 0 }}>
           <span>Range (± bins)</span>
           <input value={rangeBins} onChange={(e) => setRangeBins(e.target.value)} inputMode="numeric" />
         </label>
-        <label className="field">
+        <label className="field" style={{ flex: 2, minWidth: 180, marginBottom: 0 }}>
           <span>Strategy</span>
           <div className="segmented">
             {STRATEGIES.map((s) => (
@@ -167,16 +170,24 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
         </label>
       </div>
 
-      <div className="faint" style={{ marginBottom: 10 }}>
+      <div className="faint" style={{ margin: "8px 0 10px" }}>
         Range {fmtPrice(priceAt(minBin))} – {fmtPrice(priceAt(maxBin))} ({fmtNum(maxBin - minBin + 1)} bins, active{" "}
         {fmtPrice(pool.activePrice)}). Deposits below the active price are taken in {pool.tokenY.symbol}, above it in{" "}
         {pool.tokenX.symbol}.
       </div>
 
-      <label className="row" style={{ marginBottom: 12 }}>
-        <input type="checkbox" style={{ width: "auto" }} checked={auto} onChange={(e) => setAuto(e.target.checked)} />
-        <span className="faint">rebalance this position automatically</span>
-      </label>
+      {/* Checkbox and submit share a line — a full row for one checkbox was the
+          same waste as the old field grid, and there is nothing between them
+          that needs its own row. */}
+      <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
+        <label className="row" style={{ gap: 8 }}>
+          <input type="checkbox" style={{ width: "auto" }} checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+          <span className="faint">rebalance this position automatically</span>
+        </label>
+        <button className="btn primary" disabled={busy}>
+          {busy ? "…" : "OPEN POSITION"}
+        </button>
+      </div>
 
       {error && <div className="msg err">{error}</div>}
       {logs && (
@@ -192,10 +203,6 @@ export function OpenPositionForm({ pool, onOpened }: { pool: PoolDetail; onOpene
           {done.results[0]?.signature ? ` · tx ${shortPk(done.results[0].signature)}` : ""}
         </div>
       )}
-
-      <button className="btn primary" disabled={busy}>
-        {busy ? "…" : "OPEN POSITION"}
-      </button>
     </form>
   );
 }
