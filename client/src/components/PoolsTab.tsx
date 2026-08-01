@@ -14,8 +14,6 @@ export interface PoolRow {
   currentPrice: number;
   /** Daily fee/TVL percentage. The API calls this "apr"; it is a DAILY rate. */
   feeTvlDailyPct: number;
-  /** feeTvlDailyPct compounded over 365 days, in percent. */
-  apyPct: number;
   volume24h: number;
   fees24h: number;
   hasFarm: boolean;
@@ -36,7 +34,6 @@ export interface PoolDetail {
   maxFeePct: number;
   tvl: number | null;
   feeTvlDailyPct: number | null;
-  apyPct: number | null;
   volume24h: number | null;
   fees24h: number | null;
   isBlacklisted: boolean;
@@ -154,14 +151,13 @@ export function PoolsTab() {
                 <th>Vol 24h</th>
                 <th>Fees 24h</th>
                 <th>Fee/TVL daily</th>
-                <th>APY</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="faint">
+                  <td colSpan={9} className="faint">
                     {busy ? "searching…" : "no pools"}
                   </td>
                 </tr>
@@ -178,7 +174,6 @@ export function PoolsTab() {
                   <td>{fmtUsd(p.volume24h)}</td>
                   <td>{fmtUsd(p.fees24h)}</td>
                   <td>{fmtPct(p.feeTvlDailyPct, 3)}</td>
-                  <td className={p.apyPct > 50 ? "good" : ""}>{fmtPct(p.apyPct, 1)}</td>
                   <td>
                     <button className="btn" onClick={() => void select(p.address)}>
                       INSPECT
@@ -240,11 +235,11 @@ function PoolDetailPanel({
         <Tile label="TVL" value={detail.tvl == null ? "—" : fmtUsd(detail.tvl)} />
         <Tile label="Vol 24h" value={detail.volume24h == null ? "—" : fmtUsd(detail.volume24h)} />
         <Tile label="Fees 24h" value={detail.fees24h == null ? "—" : fmtUsd(detail.fees24h)} />
-        <Tile
-          label="APY"
-          value={detail.apyPct == null ? "—" : fmtPct(detail.apyPct, 1)}
-          sub={detail.feeTvlDailyPct == null ? undefined : `${fmtPct(detail.feeTvlDailyPct, 3)}/day fee/TVL`}
-        />
+        {/* Not an APY: Meteora's own annualised figure is naive compounding of this
+            same daily rate, and on a thin pool with one good day it overflows to
+            nonsense (up to their 2^64-1 sentinel). This daily rate is the number
+            that's actually true right now. */}
+        <Tile label="Fee/TVL 24h" value={detail.feeTvlDailyPct == null ? "—" : fmtPct(detail.feeTvlDailyPct, 3)} />
       </div>
 
       <BinChart

@@ -35,11 +35,13 @@ export function registerPoolRoutes(app: FastifyInstance, ctx: AppContext): void 
           dynamicFeePct: p.dynamic_fee_pct,
           tvl: p.tvl,
           currentPrice: p.current_price,
-          // The API's `apr` is a DAILY percentage (it equals fee_tvl_ratio_24h);
-          // `apy` is that compounded over 365 days. Pass them through named for
-          // what they are so the UI cannot render a meaningless middle number.
+          // The API's `apr` is a DAILY percentage (it equals fee_tvl_ratio_24h). Its
+          // `apy` field — that daily rate naively compounded over 365 days — is not
+          // exposed to the client: on a low-liquidity pool with an unusually good
+          // day it overflows to nonsense (up to Meteora's own 2^64-1 sentinel), and
+          // there is no annualised APY on Meteora's own pool page to cross-check it
+          // against. The daily rate is the only number here anyone can verify.
           feeTvlDailyPct: p.apr,
-          apyPct: p.apy,
           volume24h: p.volume?.["24h"] ?? 0,
           fees24h: p.fees?.["24h"] ?? 0,
           hasFarm: p.has_farm,
@@ -111,7 +113,6 @@ export function registerPoolRoutes(app: FastifyInstance, ctx: AppContext): void 
         maxFeePct: Number(feeInfo.maxFeeRatePercentage),
         tvl: meta?.tvl ?? null,
         feeTvlDailyPct: meta?.apr ?? null,
-        apyPct: meta?.apy ?? null,
         volume24h: meta?.volume?.["24h"] ?? null,
         fees24h: meta?.fees?.["24h"] ?? null,
         isBlacklisted: meta?.is_blacklisted ?? false,
