@@ -94,7 +94,12 @@ export function PositionsTab() {
     <>
       {error && <div className="msg err">{error}</div>}
 
-      <WalletPanel wallet={data?.wallet} solBalance={data?.solBalance} onRefresh={load} />
+      <WalletPanel
+        wallet={data?.wallet}
+        solBalance={data?.solBalance}
+        onRefresh={load}
+        dlmmTotalUsd={data ? data.positions.reduce((s, p) => s + p.valueUsd, 0) : undefined}
+      />
 
       {data && data.positions.length === 0 && (
         <div className="panel faint">

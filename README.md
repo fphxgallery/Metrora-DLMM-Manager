@@ -451,6 +451,15 @@ The wallet bar on POSITIONS lists every balance as a chip — SOL plus each SPL 
 priced through Jupiter. A mint Jupiter has never seen still lists, with its balance and no USD
 figure: an unknown airdrop may be exactly the thing holding an account open.
 
+Above the chips, three figures split "what do I have" into where it's sitting: **idle** is the
+wallet's own token accounts — the same total the chips add up to — **dlmm** is the sum of every
+managed position's current value, and **total** is the two added together. `idle` is not the same
+thing as "spare": some of it can be a managed position's own token accounts, held between
+rebalances rather than free to spend — that distinction lives in the chips and the expander below,
+not in this header. `dlmm` is a snapshot, not continuously reconciled against the wallet: while a rebalance's withdraw
+and deposit legs are both in flight, that position's value can briefly read as neither `idle` nor
+`dlmm` — understating `total` for a few seconds, never double-counting it.
+
 Behind the expander — under REFRESH, in the panel's right-hand action column — is the account view.
 A Solana token account is not free — it holds a
 rent-exempt deposit that is returned in full when the account is closed. Airdrops, one-off swaps and

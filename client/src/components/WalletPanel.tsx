@@ -48,10 +48,14 @@ export function WalletPanel({
   solBalance,
   wallet,
   onRefresh,
+  dlmmTotalUsd,
 }: {
   solBalance: number | undefined;
   wallet: string | null | undefined;
   onRefresh: () => void | Promise<void>;
+  /** Sum of every managed position's valueUsd — the caller already has the
+      positions list loaded, so this panel does not fetch its own copy. */
+  dlmmTotalUsd: number | undefined;
 }) {
   const [data, setData] = useState<WalletTokens | null>(null);
   const [error, setError] = useState("");
@@ -140,8 +144,23 @@ export function WalletPanel({
             <span>{addr ? shortPk(addr) : <span className="warn">none — create one in SETTINGS</span>}</span>
             {data && (
               <>
-                <span className="faint">total</span>
+                {/* "idle" rather than "wallet": this is the total minus whatever a
+                    position is doing, not a second copy of position value. Some of
+                    it may still be `inUse` (a managed position's own token
+                    accounts, held between rebalances) rather than truly spare, but
+                    that distinction already lives in the chips and the expander
+                    below — the header just needs to not double-count it against
+                    `dlmm`. */}
+                <span className="faint">idle</span>
                 <span>{fmtUsd(data.totalUsd)}</span>
+                {dlmmTotalUsd != null && (
+                  <>
+                    <span className="faint">dlmm</span>
+                    <span>{fmtUsd(dlmmTotalUsd)}</span>
+                    <span className="faint">total</span>
+                    <span>{fmtUsd(data.totalUsd + dlmmTotalUsd)}</span>
+                  </>
+                )}
               </>
             )}
           </div>
