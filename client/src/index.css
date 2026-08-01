@@ -317,6 +317,14 @@ button.pill-btn:hover {
   color: var(--text);
   border-color: var(--border-hot);
 }
+button.pill-btn.danger {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+button.pill-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 button.pill-btn[aria-pressed="true"] {
   color: var(--accent);
   border-color: var(--accent-dim);
@@ -347,8 +355,15 @@ button.pill-btn[aria-pressed="true"] {
   margin-top: 2px;
 }
 
+/* The plot is framed rather than floated on the panel, so the axis labels read as
+   inside something. Outline only, no fill: a second surface here would compete with
+   the panel it sits on. The hover tooltip is absolutely positioned and deliberately
+   allowed to spill past this border — a floating readout should. */
 .chart-wrap {
   position: relative;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px 12px;
 }
 .chart-wrap svg {
   display: block;
@@ -416,11 +431,6 @@ button.pill-btn[aria-pressed="true"] {
 .dot-cost {
   fill: var(--bad);
 }
-.event-ticks line {
-  stroke: #3a475a;
-  stroke-width: 2;
-}
-
 .chart-tip {
   position: absolute;
   top: 4px;
@@ -474,11 +484,6 @@ button.pill-btn[aria-pressed="true"] {
 }
 .chart-legend .sw-cost {
   background: var(--bad);
-}
-.chart-legend .sw-event {
-  width: 2px;
-  height: 9px;
-  background: #3a475a;
 }
 .chart-legend .legend-end {
   margin-left: auto;
@@ -544,9 +549,11 @@ button.pill-btn[aria-pressed="true"] {
   letter-spacing: 1px;
 }
 
+/* The empty state stands in for the plot, so it matches the plot's frame — dashed
+   to say "nothing here yet" rather than "here is a chart". */
 .empty-chart {
   border: 1px dashed var(--border-hot);
-  border-radius: 5px;
+  border-radius: 6px;
   padding: 22px;
   text-align: center;
   color: var(--text-faint);

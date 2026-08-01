@@ -265,6 +265,24 @@ export class Store {
     return this.data.rebalances;
   }
 
+  /**
+   * Empties the cost ledger. Returns how many records were dropped.
+   *
+   * Deliberately does NOT touch each position's `rebalanceCount` or
+   * `lastRebalanceAt`: those are the position's own state, and `lastRebalanceAt`
+   * is what the cooldown guard reads (`Engine.evaluate`). Clearing it here would
+   * let a position rebalance again immediately — a chart reset must never move
+   * real money. The journal is untouched for the same reason: a pending entry is
+   * the only record that funds are sitting in the wallet.
+   */
+  clearRebalances(): number {
+    const n = this.data.rebalances.length;
+    if (n === 0) return 0;
+    this.data.rebalances = [];
+    this.save();
+    return n;
+  }
+
   // ---- global toggles ----
 
   setAutoOverride(v: boolean | undefined): void {

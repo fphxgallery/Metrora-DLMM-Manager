@@ -125,10 +125,12 @@ function clampFrom(points: Point[], from: number): Point[] {
   return before ? [{ ts: from, usd: before.usd }, ...inside] : inside;
 }
 
-export function HistoryCharts({ cadence }: { cadence: CadenceProps }) {
+export function HistoryCharts({ cadence, onReset }: { cadence: CadenceProps; onReset?: () => void }) {
   const [tf, setTf] = useState<Timeframe>("24H");
   const [h, setH] = useState<History | null>(null);
   const [error, setError] = useState("");
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -157,6 +159,25 @@ export function HistoryCharts({ cadence }: { cadence: CadenceProps }) {
   // left edge and the two series answer for the same span.
   const cost = useMemo(() => rebase(clampFrom(h?.cost ?? [], plotFrom)), [h, plotFrom]);
 
+  const reset = useCallback(async () => {
+    setResetting(true);
+    try {
+      await api.post("/api/history/reset");
+      setConfirmReset(false);
+      // Refetch rather than blanking locally: the sampler may already have written
+      // a fresh row, and an empty chart that the next poll contradicts is worse
+      // than a one-request wait.
+      await load();
+      // The cost ledger this just cleared also feeds the caller's tiles and
+      // rebalance table, so it has to re-read too.
+      onReset?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setResetting(false);
+    }
+  }, [load, onReset]);
+
   const pills = (
     <div className="pills-row">
       {TIMEFRAMES.map((t) => (
@@ -170,6 +191,22 @@ export function HistoryCharts({ cadence }: { cadence: CadenceProps }) {
           {t}
         </button>
       ))}
+      {/* Two-step, like EXIT on a position card: this discards the cost ledger, so
+          it must not be one stray click away. */}
+      {confirmReset ? (
+        <>
+          <button type="button" className="pill-btn danger" disabled={resetting} onClick={() => void reset()}>
+            {resetting ? "…" : "CONFIRM"}
+          </button>
+          <button type="button" className="pill-btn" disabled={resetting} onClick={() => setConfirmReset(false)}>
+            CANCEL
+          </button>
+        </>
+      ) : (
+        <button type="button" className="pill-btn" title="Clear chart history" onClick={() => setConfirmReset(true)}>
+          RESET
+        </button>
+      )}
     </div>
   );
 
@@ -200,6 +237,16 @@ export function HistoryCharts({ cadence }: { cadence: CadenceProps }) {
           </div>
           {pills}
         </div>
+
+        {/* Spelled out because the cost half is not recoverable: samples resume on
+            the next poll, but a discarded rebalance record is gone for good. */}
+        {confirmReset && (
+          <div className="msg" style={{ borderColor: "var(--warn)", marginBottom: 12 }}>
+            Clears all recorded fee/PnL samples and the rebalance cost ledger — the Metrics tab's cost drag, path
+            A/B split, cadence and churn figures reset with them. Positions, cooldowns and rebalance counts are
+            untouched, and no funds move.
+          </div>
+        )}
 
         {drawable && h ? (
           <PayChart
@@ -257,7 +304,10 @@ function PayChart({
   pnlNowUsd: number | null;
 }) {
   const BOT = 150;
-  const TICK = 164;
+  // Baseline for the "1d ago" / "now" labels. It used to clear a row of rebalance
+  // tick marks below the plot; with those gone it only needs to clear the plot
+  // itself, and the slack it left behind read as a gap once the plot got a border.
+  const AXIS_Y = 172;
   // A lone PnL reading can be an indexer artefact rather than a loss — the Data
   // API is eventually consistent, and a sample taken just after a rebalance can
   // catch it having seen the withdraw but not the deposit. One such point is
@@ -335,7 +385,7 @@ function PayChart({
       <div className="chart-wrap">
         <svg
           ref={svgRef}
-          viewBox={`0 0 700 186`}
+          viewBox={`0 0 700 178`}
           role="img"
           aria-label="Cumulative fees earned against cumulative rebalance cost over the selected window"
           onPointerMove={onMove}
@@ -382,15 +432,10 @@ function PayChart({
           <path d={costPath} className="line-cost" />
           <polyline points={feeLine} className="line-fee" />
 
-          <g className="event-ticks">
-            {events.map((ts) => (
-              <line key={ts} x1={x(ts)} y1={TICK} x2={x(ts)} y2={TICK + 9} />
-            ))}
-          </g>
-          <text className="axis" x={L} y={TICK + 22}>
+          <text className="axis" x={L} y={AXIS_Y}>
             {fmtAgo(from)}
           </text>
-          <text className="axis" x={R} y={TICK + 22} textAnchor="end">
+          <text className="axis" x={R} y={AXIS_Y} textAnchor="end">
             now
           </text>
 
@@ -444,10 +489,10 @@ function PayChart({
           <i className="sw-cost" />
           Rebalance cost <b>{fmtUsd(costEnd.usd)}</b>
         </span>
-        <span>
-          <i className="sw-event" />
-          Rebalance ({events.length})
-        </span>
+        {/* No swatch: the rebalance marks that this used to key are gone from the
+            plot, so a colour chip would point at nothing. The count still earns its
+            place — it is the denominator for the cost figure beside it. */}
+        <span>Rebalance ({events.length})</span>
         {/* Position PnL including price movement — the one figure on this card that
             the two lines above cannot tell you. Fees and cost say what the
             automation did; this says what the position is worth having done. */}

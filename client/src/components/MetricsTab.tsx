@@ -116,8 +116,12 @@ export function MetricsTab() {
         </div>
       )}
 
+      {/* A reset clears the cost ledger, which is also what the tiles and the
+          RECENT REBALANCES table below are built from — without this they keep
+          showing the cleared rows until the 30s poll catches up. */}
       <HistoryCharts
         cadence={{ medianGapMin: m.medianGapMin, minGapMin: m.minGapMin, cooldownMin: m.cooldownMin }}
+        onReset={load}
       />
 
       {/* One line per position instead of a table. Every figure here belongs to the
@@ -135,8 +139,12 @@ export function MetricsTab() {
                 {fmtNum(p.rebalanceCount)} rebalances
                 {/* pathA/pathB are totals across every managed position, so the split
                     is only truthful next to a position when there is just the one.
-                    With two, each line would claim the other's rebalances. */}
-                {m.perPosition.length === 1 && (
+                    With two, each line would claim the other's rebalances.
+                    The count itself comes from the position and the split from the
+                    cost ledger, so after a history reset the ledger is empty while
+                    the count is not — "4 rebalances (0 atomic · 0 swap)" reads as a
+                    bug. Drop the split until the ledger has something to say. */}
+                {m.perPosition.length === 1 && m.pathA + m.pathB > 0 && (
                   <span className="faint">
                     {" "}
                     ({m.pathA} atomic · {m.pathB} swap)

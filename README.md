@@ -316,8 +316,9 @@ show, the heading falls back to the question.)
 same way, in one place, so a total can never disagree with the chart beside it.
 
 Cost is drawn as a **step**, because it only moves when a rebalance lands — a smooth line would imply
-continuous spending and hide that the spend is lumpy. Ticks under the axis mark each rebalance, so a
-cluster of ticks against a flat fee line is the churn signal.
+continuous spending and hide that the spend is lumpy. The legend names how many rebalances landed in
+the window; the chart itself is framed rather than marked with a tick per event, which got busy
+without adding anything the step and the count don't already say.
 
 PnL including price movement is overlaid on the same axis, as a recessive band behind the two lines —
 context for the fee story rather than a peer of it. It is the one figure the other two cannot give
@@ -416,6 +417,19 @@ consecutive samples, always sets the scale as before.
 One accounting rule worth knowing: cost and fee income are always drawn from the **same set of
 positions**. Fee income can only be read for positions still managed, so spending on closed positions
 is reported separately instead of being charged against a current position's earnings.
+
+### Resetting history
+
+**RESET**, next to the timeframe pills, wipes `data/samples.jsonl` and the rebalance cost ledger —
+both halves of this chart, so clearing one alone would leave a cost curve running across an empty
+plot. It asks to confirm first, since the cost ledger is not recoverable: samples resume on the next
+poll, but a discarded rebalance record is gone.
+
+It resets what the chart *shows*, not what the engine *does*. Each position keeps its own rebalance
+count and `lastRebalanceAt`, which is what the cooldown guard actually reads — a reset cannot make a
+position eligible to rebalance a moment sooner, and no funds move. What it does discard is real
+accounting: the Metrics tab's cost drag, path A/B split, cadence and churn figures, and the per-position
+rebalance-count breakdown all reset with the ledger.
 
 ## Wallet
 

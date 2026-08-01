@@ -298,9 +298,33 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       fees,
       pnl,
       cost,
-      /** When each rebalance landed, for the ticks under the axis. */
+      /** When each rebalance landed. Only the count is drawn now, but the
+          timestamps are what make it a count OVER THE WINDOW rather than all time. */
       events: rebalances.filter((r) => r.ts >= from).map((r) => r.ts),
     };
+  });
+
+  /**
+   * Wipes the chart's history: the sample log behind the fee and PnL lines, and
+   * the rebalance records behind the cost line.
+   *
+   * Both, because they are one chart — clearing samples alone leaves a cost curve
+   * running across an empty plot. The rebalance records are also the cost ledger,
+   * so this discards what the automation has spent: the Metrics tab's cost drag,
+   * path A/B split, cadence and churn figures all reset with it. That is accepted
+   * as the price of a clean chart.
+   *
+   * What it must NOT do is change behaviour. Each position keeps its own
+   * `rebalanceCount` and `lastRebalanceAt`, so the cooldown guard stays armed and
+   * no position becomes eligible to rebalance a moment sooner than it already was.
+   * The journal is untouched, so a pending entry still marks funds in the wallet.
+   */
+  app.post("/api/history/reset", async (req, reply) => {
+    if (!requireAuth(cfg, req, reply)) return;
+    const samples = ctx.samples.clear();
+    const records = store.clearRebalances();
+    ctx.log.warn({ samples, records }, "history reset — samples and cost ledger cleared");
+    return { ok: true, samples, records };
   });
 
   // -------------------------------------------------------------- domain ----

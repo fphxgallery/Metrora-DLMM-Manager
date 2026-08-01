@@ -69,6 +69,23 @@ export class SampleLog {
     return rows.length - keep.length;
   }
 
+  /**
+   * Drops every sample. Returns how many rows were removed.
+   *
+   * Written through a temp file and renamed, like `prune`, so a crash mid-write
+   * leaves the old log intact rather than a half-truncated one. The sampler may
+   * append again moments later; that is fine, since append recreates the file.
+   */
+  clear(): number {
+    const n = this.all().length;
+    if (n === 0) return 0;
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, "");
+    renameSync(tmp, this.file);
+    this.cache = undefined;
+    return n;
+  }
+
   private all(): PnlSample[] {
     if (!existsSync(this.file)) return [];
     // Re-parsing 8k lines per request is wasteful when nothing has changed, and
