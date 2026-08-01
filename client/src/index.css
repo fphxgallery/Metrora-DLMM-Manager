@@ -633,11 +633,30 @@ tbody tr:hover {
   background: var(--panel-2);
 }
 
-th.sortable {
+/* The click target is a real <button> for keyboard access, unstyled down to
+   the th's own look — a table header shouldn't visibly contain a button. */
+th.sortable button {
+  all: unset;
   cursor: pointer;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
 }
-th.sortable:hover {
+th.sortable:hover,
+th.sortable button:focus-visible {
   color: var(--accent);
+}
+th.sortable button:focus-visible {
+  outline: 1px solid var(--accent-dim);
+  outline-offset: 2px;
+}
+th.sortable.active {
+  color: var(--accent);
+}
+.sort-arrow {
+  margin-left: 3px;
+  font-size: 8px;
 }
 
 /* ---------- login gate ---------- */

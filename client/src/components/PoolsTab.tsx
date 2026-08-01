@@ -45,18 +45,48 @@ export interface PoolDetail {
   bins: Bin[];
 }
 
-const SORTS = [
-  { value: "volume_24h:desc", label: "Volume 24h" },
-  { value: "tvl:desc", label: "TVL" },
-  { value: "fee_tvl_ratio_24h:desc", label: "Fee/TVL 24h" },
-  { value: "fee_tvl_ratio_1h:desc", label: "Fee/TVL 1h" },
-  { value: "pool_created_at:desc", label: "Newest" },
-];
+/** Common Meteora DLMM bin steps. Exact-match, not a threshold — bin step is a
+    pool setting you want a specific value of, not a "more/less than" quantity. */
+const BIN_STEPS = [1, 2, 4, 5, 8, 10, 15, 20, 25, 50, 80, 100, 125, 200, 250, 400];
+
+/**
+ * A clickable column header. Backed by a real sort field on Meteora's Data
+ * API — checked live against the API's own 400 response, which names every
+ * field it accepts. Pair name and price have no such field, so those columns
+ * stay plain `<th>`s rather than a click that silently does nothing.
+ */
+function SortHeader({
+  field,
+  label,
+  active,
+  dir,
+  onSort,
+}: {
+  field: string;
+  label: string;
+  active: string;
+  dir: "asc" | "desc";
+  onSort: (field: string) => void;
+}) {
+  const isActive = field === active;
+  return (
+    <th className={`sortable${isActive ? " active" : ""}`}>
+      <button type="button" onClick={() => onSort(field)}>
+        {label}
+        {isActive && <span className="sort-arrow">{dir === "desc" ? "▾" : "▴"}</span>}
+      </button>
+    </th>
+  );
+}
 
 export function PoolsTab() {
   const [query, setQuery] = useState("");
-  const [sortBy, setSortBy] = useState(SORTS[0].value);
+  const [sortField, setSortField] = useState("volume_24h");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [minTvl, setMinTvl] = useState("10000");
+  // "" means no filter — Meteora's exact-match grammar has no wildcard, so
+  // "any bin step" has to be the absence of the clause rather than a value.
+  const [binStep, setBinStep] = useState("");
   const [rows, setRows] = useState<PoolRow[]>([]);
   const [selected, setSelected] = useState<PoolDetail | null>(null);
   // Ape replaces the open form rather than sitting beside it — two ways to spend
@@ -69,12 +99,13 @@ export function PoolsTab() {
     setBusy(true);
     setError("");
     try {
-      const params = new URLSearchParams({ sort_by: sortBy, page_size: "25" });
+      const params = new URLSearchParams({ sort_by: `${sortField}:${sortDir}`, page_size: "25" });
       if (query.trim()) params.set("query", query.trim());
       // Blacklisted pools are excluded always; the TVL floor keeps dust pools
       // (where a position's rent outweighs any fee it could earn) off the list.
       const filters = ["is_blacklisted=false"];
       if (Number(minTvl) > 0) filters.push(`tvl>${Number(minTvl)}`);
+      if (binStep) filters.push(`bin_step=${binStep}`);
       params.set("filter_by", filters.join(" && "));
       const res = await api.get<{ pools: PoolRow[] }>(`/api/pools?${params}`);
       setRows(res.pools);
@@ -83,12 +114,23 @@ export function PoolsTab() {
     } finally {
       setBusy(false);
     }
-  }, [query, sortBy, minTvl]);
+  }, [query, sortField, sortDir, minTvl, binStep]);
 
   useEffect(() => {
     void search();
     // Re-run on sort/filter changes; typing is submitted explicitly.
-  }, [sortBy, minTvl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sortField, sortDir, minTvl, binStep]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Clicking a header sorts by it, descending first — the default for every
+      column here (bin step included) is "most first". A second click on the
+      same column flips direction; clicking a different column resets to desc. */
+  function toggleSort(field: string) {
+    if (field === sortField) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    else {
+      setSortField(field);
+      setSortDir("desc");
+    }
+  }
 
   async function select(address: string) {
     setError("");
@@ -116,10 +158,11 @@ export function PoolsTab() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <select style={{ flex: 1, minWidth: 140 }} value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-            {SORTS.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
+          <select style={{ flex: 1, minWidth: 110 }} value={binStep} onChange={(e) => setBinStep(e.target.value)}>
+            <option value="">any bin step</option>
+            {BIN_STEPS.map((b) => (
+              <option key={b} value={b}>
+                {b}
               </option>
             ))}
           </select>
@@ -144,13 +187,19 @@ export function PoolsTab() {
             <thead>
               <tr>
                 <th>Pair</th>
-                <th>Bin step</th>
-                <th>Base fee</th>
+                <SortHeader field="bin_step" label="Bin step" active={sortField} dir={sortDir} onSort={toggleSort} />
+                <SortHeader field="fee_pct" label="Base fee" active={sortField} dir={sortDir} onSort={toggleSort} />
                 <th>Price</th>
-                <th>TVL</th>
-                <th>Vol 24h</th>
-                <th>Fees 24h</th>
-                <th>Fee/TVL daily</th>
+                <SortHeader field="tvl" label="TVL" active={sortField} dir={sortDir} onSort={toggleSort} />
+                <SortHeader field="volume_24h" label="Vol 24h" active={sortField} dir={sortDir} onSort={toggleSort} />
+                <SortHeader field="fee_24h" label="Fees 24h" active={sortField} dir={sortDir} onSort={toggleSort} />
+                <SortHeader
+                  field="fee_tvl_ratio_24h"
+                  label="Fee/TVL daily"
+                  active={sortField}
+                  dir={sortDir}
+                  onSort={toggleSort}
+                />
                 <th />
               </tr>
             </thead>
