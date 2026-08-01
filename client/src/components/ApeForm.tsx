@@ -97,11 +97,6 @@ export function ApeForm({ pool, onOpened, onClose }: { pool: PoolDetail; onOpene
         </button>
       </div>
 
-      <div className="faint" style={{ textTransform: "none", letterSpacing: 0, marginBottom: 12 }}>
-        One token in. Half is swapped for the other side, then a position opens centred on the active bin — using your
-        SETTINGS values, shown below before anything is sent.
-      </div>
-
       <div className="grid-2">
         <label className="field">
           <span>Amount in</span>

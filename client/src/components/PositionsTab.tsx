@@ -419,8 +419,7 @@ function PositionCard({
       */}
       <div className="facts">
         <Fact k="Range" v={`${fmtPrice(p.minPrice)} – ${fmtPrice(p.maxPrice)}`}>
-          {fmtNum(p.widthBins)} bins ·{" "}
-          {p.binsToEdge >= 0 ? `${p.binsToEdge} from edge` : `${-p.binsToEdge} outside`}
+          {p.binsToEdge >= 0 ? `${fmtNum(p.binsToEdge)} bins from edge` : `${fmtNum(-p.binsToEdge)} bins outside`}
         </Fact>
         <Fact
           k="PnL"
