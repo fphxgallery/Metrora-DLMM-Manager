@@ -157,20 +157,34 @@ at zero.
 ### The wallet needs a little of the quote token
 
 Not obvious, and it costs a whole rebalance when it is missing. The rebalance
-instruction settles **rounding shortfalls out of the wallet's token account**: with
-`STRATEGY_TYPE=Curve` the redeposit side can ask for marginally more of a token than
-the withdraw released. Against an empty account that becomes an SPL Token
-`insufficient funds` (0x1) at simulation, and the whole rebalance fails before its
-first transaction is sent — including path B, where the failure is on the *withdraw*
-leg and has nothing to do with the swap that would have followed.
+instruction removes the old range and redeposits into the new one atomically, and
+settles the difference **out of the wallet's token account**. When the removal
+releases none of a side — price sitting fully on the other one, which is exactly when
+a rebalance is most needed — the redeposit still asks for a little of it. Against an
+empty account that becomes an SPL Token `insufficient funds` (0x1), and the whole
+rebalance fails: at simulation if it is caught there, on chain (paying the fee) if it
+is not. Either way the failure is on the *withdraw* leg and has nothing to do with the
+swap that would have followed.
 
-Seen live on a SOL-USDC position whose wallet held no USDC. The shortfall is cents.
+Seen live on three pools: a SOL-USDC position whose wallet held no USDC, and CATE-SOL
+and CONTRA-SOL positions where the deposit half asked for 146,041 and 743,476 lamports
+of **wSOL** against an account that did not exist. The shortfall is cents.
 
 So before anything is journalled or sent, the app checks that the wallet holds at
 least `MIN_QUOTE_BALANCE_USD` of the pool's quote token, and with `AUTO_TOPUP` on
-swaps a little SOL to refill it. Refills to twice the floor, so a rebalance that eats
-a few cents does not trigger another top-up on the next tick. With `AUTO_TOPUP=false`
-it warns by log and Telegram and leaves the topping up to you.
+refills it — by **wrapping** SOL when the quote is SOL, by swapping a little SOL for
+it otherwise. Refills to twice the floor, so a rebalance that eats a few cents does not
+trigger another top-up on the next tick. With `AUTO_TOPUP=false` it warns by log and
+Telegram and leaves the topping up to you.
+
+> The wSOL case is worth spelling out, because it is the one that reads as already
+> handled and is not. Native SOL cannot be spent by the rebalance instruction — only
+> **wrapped** SOL sitting in the wSOL token account can, and creating that account
+> does not fund it. So a wallet holding 0.85 SOL and an empty wSOL account has, as far
+> as this instruction is concerned, nothing. The balance this guard reads is therefore
+> the token account alone (`MeteoraClient.ataBalance`), never the "spendable" figure
+> `tokenBalance` reports — that one deliberately folds native SOL in, which is correct
+> for sizing a swap, since Jupiter wraps on demand, and wrong here.
 
 `MIN_SOL_BALANCE` is never spent to fund a top-up — that reserve is what keeps fees
 and rent payable, and draining it would trade one empty balance for another. If the

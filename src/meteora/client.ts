@@ -1,5 +1,17 @@
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, type TransactionInstruction } from "@solana/web3.js";
-import { NATIVE_MINT, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import {
+  Connection,
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+  type TransactionInstruction,
+} from "@solana/web3.js";
+import {
+  NATIVE_MINT,
+  createAssociatedTokenAccountIdempotentInstruction,
+  createSyncNativeInstruction,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import BN from "bn.js";
 import { existsSync, statSync } from "node:fs";
 import type { Config } from "../config.js";
@@ -115,6 +127,49 @@ export class MeteoraClient {
       raw = raw.add(new BN(Math.max(0, lamports - reserve)));
     }
     return raw;
+  }
+
+  /**
+   * What the token ACCOUNT holds, in raw base units — no native-SOL fold.
+   *
+   * The difference from `tokenBalance` matters for exactly one caller, and it is
+   * the difference between a rebalance landing and failing. `tokenBalance` counts
+   * native SOL toward wSOL because the swap path wraps on demand, so for sizing a
+   * deposit that fold is right. But Meteora's `RebalanceLiquidity` transfers wSOL
+   * straight OUT of this account to settle the deposit half, and it cannot wrap:
+   * an empty wSOL ATA fails the whole instruction with "insufficient funds" even
+   * on a wallet holding plenty of native SOL. Anything asking "can this account
+   * be debited on chain right now" must use this, not `tokenBalance`.
+   */
+  async ataBalance(mint: PublicKey, tokenProgramId?: PublicKey): Promise<BN> {
+    const owner = this.wallet()?.publicKey;
+    if (!owner) return new BN(0);
+    const ata = getAssociatedTokenAddressSync(mint, owner, true, tokenProgramId);
+    try {
+      const bal = await this.connection.getTokenAccountBalance(ata);
+      return new BN(bal.value.amount);
+    } catch {
+      // No ATA at all, which is the case this exists to catch — it reads as zero
+      // rather than throwing, so the caller tops it up instead of giving up.
+      return new BN(0);
+    }
+  }
+
+  /**
+   * Instructions that move native SOL into the wallet's wSOL ATA.
+   *
+   * Creating the ATA is not funding it — `createAssociatedTokenAccountIdempotent`
+   * leaves a zero balance — so the transfer and the `syncNative` that books it
+   * are both required for the account to be spendable.
+   */
+  wrapSolIxs(lamports: number): TransactionInstruction[] {
+    const owner = this.requireWallet().publicKey;
+    const ata = getAssociatedTokenAddressSync(NATIVE_MINT, owner, true);
+    return [
+      createAssociatedTokenAccountIdempotentInstruction(owner, ata, owner, NATIVE_MINT),
+      SystemProgram.transfer({ fromPubkey: owner, toPubkey: ata, lamports }),
+      createSyncNativeInstruction(ata),
+    ];
   }
 
   /**

@@ -475,15 +475,18 @@ export function planTopUp(args: {
 }
 
 /**
- * Keeps a small idle balance of the quote token in the wallet, topping it up by
- * swapping a little SOL when AUTO_TOPUP is on.
+ * Keeps a small idle balance of the quote token in the wallet's ATA, refilled
+ * when AUTO_TOPUP is on — by wrapping SOL when the quote is SOL, by swapping a
+ * little SOL otherwise.
  *
- * Why this exists: the rebalance instruction settles rounding shortfalls out of
- * the wallet's ATA. With `STRATEGY_TYPE=Curve` the redeposit side can ask for
- * marginally more of a token than the withdraw released, and against an empty ATA
- * that surfaces as SPL Token "insufficient funds" (0x1) at simulation — observed
- * live, the whole rebalance failing before its first transaction was sent. The
- * shortfall is cents; a dollar left idle covers it permanently.
+ * Why this exists: `RebalanceLiquidity` removes the old range and redeposits into
+ * the new one inside a single instruction, and settles the difference out of the
+ * wallet's ATA. When the removal releases none of a side (price sitting fully on
+ * the other one — exactly when a rebalance is most needed) the redeposit still
+ * asks for a little of it, and against an empty ATA that is SPL Token
+ * "insufficient funds" (0x1). Observed live on two pools: the deposit half asked
+ * for 146,041 and 743,476 lamports of wSOL against an ATA that did not exist.
+ * The shortfall is cents; a dollar left idle covers it.
  *
  * Never throws. A rebalance that would have worked anyway must not be blocked
  * because the buffer could not be priced or the top-up did not fill.
@@ -499,9 +502,16 @@ export async function ensureQuoteBuffer(
   const wallet = client.wallet();
   if (!wallet || !(args.quotePriceUsd > 0)) return { balanceUsd: null, low: false };
 
+  // The wSOL case is why this reads the ATA rather than `tokenBalance`. That
+  // helper folds native SOL into the wSOL figure, which is right when sizing a
+  // swap (Jupiter wraps on demand) and wrong here: this guard is asking whether
+  // Meteora's instruction can DEBIT the account on chain, and it cannot spend
+  // native SOL. With the fold, a wallet holding 0.8 SOL and an empty wSOL ATA
+  // read as $60 against a $1 floor, so the guard returned "fine" and the
+  // rebalance failed at simulation on the account it was meant to protect.
   let balanceUsd: number;
   try {
-    const raw = await client.tokenBalance(new PublicKey(args.quoteMint));
+    const raw = await client.ataBalance(new PublicKey(args.quoteMint));
     balanceUsd = (Number(raw.toString()) / 10 ** args.quoteDecimals) * args.quotePriceUsd;
   } catch (e) {
     log.debug({ err: e instanceof Error ? e.message : String(e) }, "quote balance read failed");
@@ -543,11 +553,28 @@ export async function ensureQuoteBuffer(
     return { balanceUsd, low: true };
   }
 
+  const lamports = Math.floor(plan.wantSol * LAMPORTS_PER_SOL);
+
   try {
+    // Quote IS SOL: wrap, never swap. The swap below would be wSOL->wSOL, which
+    // is not a route — so before this branch existed the guard could only ever
+    // no-op on exactly the pools that need it (any *-SOL pair, where token_y is
+    // SOL). Wrapping is also strictly cheaper than a swap: no route, no slippage,
+    // and the lamports stay yours the whole time.
+    if (args.quoteMint === WSOL_MINT) {
+      const result = await sender.sendInstructions(client.wrapSolIxs(lamports), [wallet], "wrap SOL buffer");
+      if (!result.signature) return { balanceUsd, low: true };
+      log.info(
+        { balanceUsd, floor, wrappedSol: plan.wantSol, signature: result.signature },
+        "wrapped SOL into the wSOL buffer",
+      );
+      return { balanceUsd, toppedUpUsd: plan.wantUsd, low: false };
+    }
+
     const quote = await swapper.quote({
       inputMint: WSOL_MINT,
       outputMint: args.quoteMint,
-      amount: new BN(Math.floor(plan.wantSol * LAMPORTS_PER_SOL)),
+      amount: new BN(lamports),
     });
     const tx = await swapper.buildTransaction(quote, wallet);
     const result = await sender.sendVersioned(tx, `top up ${args.quoteSymbol} buffer`);
