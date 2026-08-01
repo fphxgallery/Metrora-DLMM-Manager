@@ -180,6 +180,24 @@ export function PoolsTab() {
 
       {error && <div className="msg err">{error}</div>}
 
+      {/* Between the search panel and the results table, not below the table:
+          INSPECT is how you get here, so the answer belongs above the list you
+          just clicked out of, not past it. */}
+      {selected && (
+        <>
+          <PoolDetailPanel detail={selected} onClose={() => setSelected(null)} onApe={() => setAping(true)} />
+          {aping ? (
+            <ApeForm
+              pool={selected}
+              onOpened={() => void select(selected.address)}
+              onClose={() => setAping(false)}
+            />
+          ) : (
+            <OpenPositionForm pool={selected} onOpened={() => void select(selected.address)} />
+          )}
+        </>
+      )}
+
       <div className="panel">
         <h2>Pools</h2>
         <div className="table-wrap">
@@ -234,21 +252,6 @@ export function PoolsTab() {
           </table>
         </div>
       </div>
-
-      {selected && (
-        <>
-          <PoolDetailPanel detail={selected} onClose={() => setSelected(null)} onApe={() => setAping(true)} />
-          {aping ? (
-            <ApeForm
-              pool={selected}
-              onOpened={() => void select(selected.address)}
-              onClose={() => setAping(false)}
-            />
-          ) : (
-            <OpenPositionForm pool={selected} onOpened={() => void select(selected.address)} />
-          )}
-        </>
-      )}
     </>
   );
 }
