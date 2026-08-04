@@ -136,7 +136,7 @@ would attach an absurd priority fee to every transaction).
 | `SAMPLE_INTERVAL_MIN` | `15` | How often PnL is recorded for the METRICS charts |
 | `SAMPLE_RETENTION_DAYS` | `90` | How much sample history to keep |
 | `MIN_SOL_BALANCE` | `0.05` | Refuse to act below this, so fees and rent stay payable. Never spent on a top-up |
-| `MIN_QUOTE_BALANCE_USD` | `1` | Quote-token balance to keep idle in the wallet — see below. `0` disables |
+| `MIN_QUOTE_BALANCE_USD` | `1` | Idle balance to keep of **each** pool token — see below. `0` disables |
 | `AUTO_TOPUP` | `true` | Swap a little SOL to refill that buffer. `false` warns instead |
 | `MAX_TOPUP_USD` | `5` | Ceiling on a single top-up. Must be `>= MIN_QUOTE_BALANCE_USD` |
 | `APE_AUTO_MANAGE` | `false` | Whether a position opened by APE is enrolled in auto-rebalancing straight away |
@@ -154,7 +154,7 @@ drains a wallet. Any combination implying more than 0.01 SOL of priority fee on 
 is refused. For reference, the shipped defaults imply 30,000 lamports, and most recent blocks price
 at zero.
 
-### The wallet needs a little of the quote token
+### The wallet needs a little of both pool tokens
 
 Not obvious, and it costs a whole rebalance when it is missing. The rebalance
 instruction removes the old range and redeposits into the new one atomically, and
@@ -166,15 +166,23 @@ rebalance fails: at simulation if it is caught there, on chain (paying the fee) 
 is not. Either way the failure is on the *withdraw* leg and has nothing to do with the
 swap that would have followed.
 
-Seen live on three pools: a SOL-USDC position whose wallet held no USDC, and CATE-SOL
-and CONTRA-SOL positions where the deposit half asked for 146,041 and 743,476 lamports
-of **wSOL** against an account that did not exist. The shortfall is cents.
+Seen live on four pools: a SOL-USDC position whose wallet held no USDC; CATE-SOL and
+CONTRA-SOL positions where the deposit half asked for 146,041 and 743,476 lamports of
+**wSOL** against an account that did not exist; and a Jimothy-SOL position that asked
+for 261,692 base units of its **token_x** side. The shortfall is cents.
+
+**Which side comes up short depends only on where the price sits**, so both are
+buffered. That last case is why: the wSOL side was topped up correctly and the
+rebalance still reverted on chain four seconds later, because the guard covered
+`token_y` alone and the redeposit wanted `token_x`.
 
 So before anything is journalled or sent, the app checks that the wallet holds at
-least `MIN_QUOTE_BALANCE_USD` of the pool's quote token, and with `AUTO_TOPUP` on
-refills it — by **wrapping** SOL when the quote is SOL, by swapping a little SOL for
-it otherwise. Refills to twice the floor, so a rebalance that eats a few cents does not
-trigger another top-up on the next tick. With `AUTO_TOPUP=false` it warns by log and
+least `MIN_QUOTE_BALANCE_USD` of **each** of the pool's two tokens, and with
+`AUTO_TOPUP` on refills whichever is short — by **wrapping** SOL when that side is SOL,
+by swapping a little SOL for it otherwise. Refills to twice the floor, so a rebalance
+that eats a few cents does not trigger another top-up on the next tick. The two sides
+are handled one after the other rather than at once, because both spend SOL and the
+second has to see what the first left. With `AUTO_TOPUP=false` it warns by log and
 Telegram and leaves the topping up to you.
 
 > The wSOL case is worth spelling out, because it is the one that reads as already
@@ -485,7 +493,7 @@ account with extensions holds more than the 0.00203928 SOL of a standard one, an
 what is actually there.
 
 **Either token of a managed position's pool is not listed at all**, even when empty — the
-quote-token buffer among them. The rebalance path re-creates those accounts, so closing one
+side buffers among them. The rebalance path re-creates those accounts, so closing one
 reclaims rent that the next rebalance immediately pays again; there is nothing to offer, so the row
 is left out. They remain visible as chips, and the count beside the expander is the number of rows
 you can actually see. If every account is in use, the expander itself disappears rather than

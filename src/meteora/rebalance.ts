@@ -209,18 +209,10 @@ export async function planRebalance(
 export async function executeRebalance(deps: RebalanceDeps, plan: RebalancePlan): Promise<RebalanceOutcome> {
   const { store, log } = deps;
 
-  // Before anything is journalled or sent: the rebalance instruction settles
-  // rounding shortfalls out of the wallet's quote-token ATA, and an empty one
-  // fails the whole thing at simulation.
+  // Before anything is journalled or sent: the rebalance instruction settles its
+  // redeposit out of the wallet's ATAs, and an empty one fails the whole thing.
   const meta = await deps.dataApi.pool(plan.poolAddress).catch(() => null);
-  if (meta) {
-    await ensureQuoteBuffer(deps, {
-      quoteMint: meta.token_y.address,
-      quoteSymbol: meta.token_y.symbol,
-      quotePriceUsd: meta.token_y.price,
-      quoteDecimals: meta.token_y.decimals,
-    });
-  }
+  if (meta) await ensurePoolBuffers(deps, meta);
 
   const entry: JournalEntry = {
     id: randomUUID(),
@@ -475,23 +467,60 @@ export function planTopUp(args: {
 }
 
 /**
- * Keeps a small idle balance of the quote token in the wallet's ATA, refilled
- * when AUTO_TOPUP is on — by wrapping SOL when the quote is SOL, by swapping a
- * little SOL otherwise.
+ * Buffers BOTH sides of the pool, because the redeposit can need either one.
+ *
+ * This started as a token_y-only guard, and that was wrong. `RebalanceLiquidity`
+ * settles its redeposit out of whichever ATA is short, and which side that is
+ * depends only on where the price sits. Observed live: a wSOL buffer topped up
+ * correctly, then the same rebalance failed on chain four seconds later for
+ * 261,692 base units of the token_x side (Jimothy), against an ATA holding none.
+ *
+ * Sequential rather than concurrent, deliberately: both top-ups spend SOL, and
+ * `planTopUp` re-reads the balance each time so the second sees what the first
+ * left. Run in parallel they would both plan against the same pre-spend figure
+ * and could together dip under MIN_SOL_BALANCE.
+ */
+export async function ensurePoolBuffers(
+  deps: RebalanceDeps,
+  meta: { token_x: PoolTokenMeta; token_y: PoolTokenMeta },
+): Promise<void> {
+  for (const side of [meta.token_x, meta.token_y]) {
+    await ensureSideBuffer(deps, {
+      quoteMint: side.address,
+      quoteSymbol: side.symbol,
+      quotePriceUsd: side.price,
+      quoteDecimals: side.decimals,
+    });
+  }
+}
+
+/** The fields `ensurePoolBuffers` needs off one side of a Data API pool record. */
+interface PoolTokenMeta {
+  address: string;
+  symbol: string;
+  price: number;
+  decimals: number;
+}
+
+/**
+ * Keeps a small idle balance of one pool side in the wallet's ATA, refilled when
+ * AUTO_TOPUP is on — by wrapping SOL when that side is SOL, by swapping a little
+ * SOL otherwise.
  *
  * Why this exists: `RebalanceLiquidity` removes the old range and redeposits into
  * the new one inside a single instruction, and settles the difference out of the
  * wallet's ATA. When the removal releases none of a side (price sitting fully on
  * the other one — exactly when a rebalance is most needed) the redeposit still
  * asks for a little of it, and against an empty ATA that is SPL Token
- * "insufficient funds" (0x1). Observed live on two pools: the deposit half asked
- * for 146,041 and 743,476 lamports of wSOL against an ATA that did not exist.
- * The shortfall is cents; a dollar left idle covers it.
+ * "insufficient funds" (0x1). Observed live on three pools: the deposit half asked
+ * for 146,041 and 743,476 lamports of wSOL, and 261,692 base units of a token_x,
+ * each against an ATA that did not exist. The shortfall is cents; a dollar left
+ * idle covers it.
  *
  * Never throws. A rebalance that would have worked anyway must not be blocked
  * because the buffer could not be priced or the top-up did not fill.
  */
-export async function ensureQuoteBuffer(
+export async function ensureSideBuffer(
   deps: RebalanceDeps,
   args: { quoteMint: string; quoteSymbol: string; quotePriceUsd: number; quoteDecimals: number },
 ): Promise<{ balanceUsd: number | null; toppedUpUsd?: number; low: boolean }> {
@@ -850,7 +879,7 @@ export async function resumeJournal(
         // rebalance withdrew": `tokenBalance` folds native SOL above the
         // MIN_SOL_BALANCE reserve into the wSOL balance (client.ts), so for a
         // wSOL leg `available` is very nearly the whole wallet, and even for a
-        // non-wSOL leg it includes the idle quote buffer `ensureQuoteBuffer`
+        // non-wSOL leg it includes the idle side buffer `ensureSideBuffer`
         // deliberately parks there. Refuse and tell the operator instead.
         if (intended.isZero()) {
           store.updateJournal(entry.id, {

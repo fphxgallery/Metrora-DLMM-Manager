@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import BN from "bn.js";
 
-import { ensureQuoteBuffer } from "../dist/meteora/rebalance.js";
+import { ensureSideBuffer } from "../dist/meteora/rebalance.js";
 
 // The guard this file covers already existed and still let two rebalances fail on
 // chain, because it was defeated twice over on any *-SOL pool:
@@ -47,7 +47,7 @@ function harness({ quoteMint, ataRaw, nativeSol = 0.85, autoTopUp = true, minQuo
       // The folded read. If anything under test calls this for the wSOL buffer the
       // original bug is back, so it fails loudly rather than returning a number.
       tokenBalance: async () => {
-        throw new Error("ensureQuoteBuffer must not use the native-SOL-folded balance");
+        throw new Error("ensureSideBuffer must not use the native-SOL-folded balance");
       },
       wrapSolIxs: (lamports) => [{ kind: "wrap", lamports }],
     },
@@ -83,7 +83,7 @@ function harness({ quoteMint, ataRaw, nativeSol = 0.85, autoTopUp = true, minQuo
 test("an empty wSOL ATA is seen as empty, not as the wallet's native SOL", async () => {
   // The exact live shape: no wSOL ATA at all, 0.85 SOL sitting in the wallet.
   const h = harness({ quoteMint: WSOL, ataRaw: 0, nativeSol: 0.85 });
-  const res = await ensureQuoteBuffer(h.deps, h.args);
+  const res = await ensureSideBuffer(h.deps, h.args);
 
   assert.equal(res.balanceUsd, 0, "the folded native-SOL balance must not count here");
   assert.equal(res.low, false, "it should have been topped up");
@@ -91,7 +91,7 @@ test("an empty wSOL ATA is seen as empty, not as the wallet's native SOL", async
 
 test("a SOL quote is WRAPPED, never swapped", async () => {
   const h = harness({ quoteMint: WSOL, ataRaw: 0 });
-  await ensureQuoteBuffer(h.deps, h.args);
+  await ensureSideBuffer(h.deps, h.args);
 
   assert.equal(h.quoted.length, 0, "wSOL -> wSOL is not a route and must never be quoted");
   assert.equal(h.sent.length, 1);
@@ -101,7 +101,7 @@ test("a SOL quote is WRAPPED, never swapped", async () => {
 
 test("the wrap is sized to twice the floor and stays inside MIN_SOL_BALANCE", async () => {
   const h = harness({ quoteMint: WSOL, ataRaw: 0 });
-  await ensureQuoteBuffer(h.deps, h.args);
+  await ensureSideBuffer(h.deps, h.args);
 
   const lamports = h.sent[0].ixs[0].lamports;
   const wantSol = (1 * 2) / SOL_PRICE; // floor $1 -> refill to $2
@@ -114,7 +114,7 @@ test("the wrap is sized to twice the floor and stays inside MIN_SOL_BALANCE", as
 test("a funded wSOL ATA is left alone", async () => {
   // $2 of wSOL already wrapped, floor is $1.
   const h = harness({ quoteMint: WSOL, ataRaw: Math.floor((2 / SOL_PRICE) * 1e9) });
-  const res = await ensureQuoteBuffer(h.deps, h.args);
+  const res = await ensureSideBuffer(h.deps, h.args);
 
   assert.equal(res.low, false);
   assert.equal(h.sent.length, 0, "nothing to do — no transaction should be sent");
@@ -123,7 +123,7 @@ test("a funded wSOL ATA is left alone", async () => {
 test("a non-SOL quote still tops up by swapping", async () => {
   // The USDC path is untouched by this fix and must keep working.
   const h = harness({ quoteMint: USDC, ataRaw: 0 });
-  await ensureQuoteBuffer(h.deps, h.args);
+  await ensureSideBuffer(h.deps, h.args);
 
   assert.equal(h.quoted.length, 1);
   assert.equal(h.quoted[0].inputMint, WSOL);
@@ -133,7 +133,7 @@ test("a non-SOL quote still tops up by swapping", async () => {
 
 test("AUTO_TOPUP off warns instead of wrapping", async () => {
   const h = harness({ quoteMint: WSOL, ataRaw: 0, autoTopUp: false });
-  const res = await ensureQuoteBuffer(h.deps, h.args);
+  const res = await ensureSideBuffer(h.deps, h.args);
 
   assert.equal(res.low, true);
   assert.equal(h.sent.length, 0, "nothing may be signed with AUTO_TOPUP off");
@@ -142,7 +142,7 @@ test("AUTO_TOPUP off warns instead of wrapping", async () => {
 test("a wallet with no spendable SOL refuses rather than eating the reserve", async () => {
   // MIN_SOL_BALANCE is what keeps fees and rent payable.
   const h = harness({ quoteMint: WSOL, ataRaw: 0, nativeSol: 0.05 });
-  const res = await ensureQuoteBuffer(h.deps, h.args);
+  const res = await ensureSideBuffer(h.deps, h.args);
 
   assert.equal(res.low, true);
   assert.equal(h.sent.length, 0);
@@ -156,13 +156,13 @@ test("a failed wrap warns and does not block the rebalance", async () => {
     throw new Error("blockhash expired");
   };
 
-  const res = await ensureQuoteBuffer(h.deps, h.args);
+  const res = await ensureSideBuffer(h.deps, h.args);
   assert.equal(res.low, true, "reported as low, but no throw");
 });
 
 test("MIN_QUOTE_BALANCE_USD=0 disables the guard entirely", async () => {
   const h = harness({ quoteMint: WSOL, ataRaw: 0, minQuoteBalanceUsd: 0 });
-  const res = await ensureQuoteBuffer(h.deps, h.args);
+  const res = await ensureSideBuffer(h.deps, h.args);
 
   assert.deepEqual(res, { balanceUsd: null, low: false });
   assert.equal(h.sent.length, 0);
