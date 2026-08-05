@@ -1,6 +1,38 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import type { StrategyTypeName } from "./config.js";
+import type { StrategyTypeName, TriggerAction } from "./config.js";
+
+/**
+ * A position's stop loss / take profit state.
+ *
+ * Both the settings and the bookkeeping live here, because the bookkeeping is
+ * per position and has to survive a restart: a confirmation streak that reset on
+ * every deploy would mean a stop loss never reaches its third reading on a box
+ * that gets redeployed often.
+ */
+export interface PositionTriggers {
+  /**
+   * Opt-in per position, never inherited. The global thresholds are defaults for
+   * a position that has been armed, not an instruction to arm one — the action
+   * is terminal, so enrolling in it is a decision taken one position at a time.
+   */
+  on: boolean;
+  /** Overrides of the global thresholds. Unset falls back to config. */
+  stopLoss?: number;
+  takeProfit?: number;
+  onFire?: TriggerAction;
+  /** Consecutive readings past a threshold so far. */
+  streak: number;
+  /** Which threshold the streak belongs to; a flip to the other side resets it. */
+  streakSide?: "stop" | "target";
+  /** Consecutive times firing was refused (usually an unroutable swap). */
+  refusals: number;
+  lastCheckAt?: number;
+  /** The last reading taken, kept so the UI can show distance to the threshold. */
+  lastReading?: number;
+  /** Set when the triggers turned themselves off, with the reason shown in the UI. */
+  disarmedReason?: string;
+}
 
 /**
  * Where a rebalance got to. A crash mid-sequence resumes from here.
@@ -24,6 +56,8 @@ export interface ManagedPosition {
   strategyType?: StrategyTypeName;
   edgeBufferBins?: number;
   cooldownMin?: number;
+  /** Stop loss / take profit. Absent means never armed for this position. */
+  triggers?: PositionTriggers;
   openedAt: number;
   lastRebalanceAt?: number;
   /**
@@ -186,6 +220,21 @@ export class Store {
     Object.assign(p, patch);
     this.save();
     return p;
+  }
+
+  /**
+   * Merges a patch into a position's trigger state, creating it if absent.
+   *
+   * Separate from `patchPosition` because triggers are nested: passing
+   * `{ triggers: { streak: 1 } }` through `Object.assign` would replace the whole
+   * object and silently drop the thresholds along with it.
+   */
+  setTriggers(pk: string, patch: Partial<PositionTriggers>): PositionTriggers | undefined {
+    const p = this.position(pk);
+    if (!p) return undefined;
+    p.triggers = { on: false, streak: 0, refusals: 0, ...p.triggers, ...patch };
+    this.save();
+    return p.triggers;
   }
 
   removePosition(pk: string): void {

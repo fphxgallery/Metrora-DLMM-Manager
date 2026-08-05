@@ -4,7 +4,7 @@ import { listPositions } from "../meteora/positions.js";
 import { addLiquidity, claimFees, exitPosition, openPosition, type ActionDeps } from "../meteora/actions.js";
 import { executeRebalance, planRebalance, type RebalanceDeps } from "../meteora/rebalance.js";
 import { TxError } from "../tx/send.js";
-import { STRATEGY_TYPES, type StrategyTypeName } from "../config.js";
+import { STRATEGY_TYPES, TRIGGER_ACTIONS, type StrategyTypeName, type TriggerAction } from "../config.js";
 import type { AppContext } from "../types.js";
 
 export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, rebalanceDeps: RebalanceDeps): void {
@@ -219,6 +219,75 @@ export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, re
 
     log.info({ positionPk: pk, auto: saved.auto }, "position management updated");
     return { ok: true, managed: saved };
+  });
+
+  /**
+   * Arms or disarms this position's stop loss / take profit, with optional
+   * per-position thresholds.
+   *
+   * Only reachable for a position this app already manages: the engine tick is
+   * what evaluates triggers, and it only visits managed positions. Arming
+   * something it never looks at would be a switch that silently does nothing.
+   */
+  app.post("/api/positions/:pk/triggers", async (req, reply) => {
+    if (!requireAuth(cfg, req, reply)) return;
+    const { pk } = req.params as { pk: string };
+    const body = (req.body ?? {}) as {
+      on?: boolean;
+      stopLoss?: number | null;
+      takeProfit?: number | null;
+      onFire?: string | null;
+    };
+
+    const existing = store.position(pk);
+    if (!existing) {
+      return reply.code(400).send({
+        error: "position is not managed — enable AUTO first, so the engine has a reason to look at it",
+      });
+    }
+
+    // Same sign rule the global config enforces, and for the same reason: a
+    // positive stop loss sits above a healthy position's PnL and would close it
+    // on the first confirmed reading.
+    const stopLoss = numOrUndef(body.stopLoss);
+    const takeProfit = numOrUndef(body.takeProfit);
+    if (stopLoss !== undefined && !(stopLoss < 0)) {
+      return reply.code(400).send({ error: `stopLoss must be negative (got ${stopLoss}); send null to use the global value` });
+    }
+    if (takeProfit !== undefined && !(takeProfit > 0)) {
+      return reply.code(400).send({ error: `takeProfit must be positive (got ${takeProfit}); send null to use the global value` });
+    }
+    if (body.onFire != null && !(TRIGGER_ACTIONS as readonly string[]).includes(body.onFire)) {
+      return reply.code(400).send({ error: `onFire must be one of: ${TRIGGER_ACTIONS.join(", ")}` });
+    }
+
+    // Arming with nothing to fire on is the one combination worth refusing: the
+    // UI would show it armed and it could never act.
+    const effStop = stopLoss ?? (body.stopLoss === null ? undefined : existing.triggers?.stopLoss) ?? cfg.stopLoss;
+    const effTarget =
+      takeProfit ?? (body.takeProfit === null ? undefined : existing.triggers?.takeProfit) ?? cfg.takeProfit;
+    if (body.on === true && effStop === undefined && effTarget === undefined) {
+      return reply.code(400).send({
+        error: "no stop loss or take profit to arm — set one here, or set a global default in SETTINGS",
+      });
+    }
+
+    const saved = store.setTriggers(pk, {
+      ...(body.on === undefined ? {} : { on: body.on }),
+      ...(body.stopLoss === undefined ? {} : { stopLoss: body.stopLoss === null ? undefined : stopLoss }),
+      ...(body.takeProfit === undefined ? {} : { takeProfit: body.takeProfit === null ? undefined : takeProfit }),
+      ...(body.onFire === undefined ? {} : { onFire: body.onFire === null ? undefined : (body.onFire as TriggerAction) }),
+      // Any edit clears the bookkeeping. A streak counted against the OLD
+      // threshold is not evidence about the new one, and a refusal count that
+      // survived a change of target token would disarm a route that now works.
+      streak: 0,
+      streakSide: undefined,
+      refusals: 0,
+      disarmedReason: undefined,
+    });
+
+    log.warn({ positionPk: pk, on: saved?.on, stopLoss: effStop, takeProfit: effTarget }, "position triggers updated");
+    return { ok: true, triggers: saved };
   });
 
   /** Stops managing a position. Does not touch the position on chain. */

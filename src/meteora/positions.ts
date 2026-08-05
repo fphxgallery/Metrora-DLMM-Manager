@@ -57,6 +57,27 @@ export interface PositionView {
     lastRebalanceAt?: number;
     openedAt: number;
     timeInRangePct: number | null;
+    /**
+     * Stop loss / take profit as the engine would apply them — per-position
+     * overrides already folded into the global defaults, so the card renders
+     * what would actually fire rather than re-deriving the fallback itself.
+     */
+    triggers: {
+      on: boolean;
+      measure: "pct" | "usd";
+      /** Effective values; null means that side is disabled. */
+      stopLoss: number | null;
+      takeProfit: number | null;
+      onFire: string;
+      /** True when the values above come from this position rather than config. */
+      overridden: boolean;
+      streak: number;
+      confirmations: number;
+      lastReading: number | null;
+      lastCheckAt: number | null;
+      refusals: number;
+      disarmedReason: string | null;
+    };
   } | null;
 
   pnl: {
@@ -126,6 +147,7 @@ export async function listPositions(deps: {
     for (const p of info.lbPairPositionsData) {
       views.push(
         buildView({
+          cfg,
           poolAddress,
           pool,
           meta,
@@ -147,6 +169,7 @@ export async function listPositions(deps: {
 }
 
 function buildView(args: {
+  cfg: Config;
   poolAddress: string;
   pool: DlmmPool;
   meta: DataApiPool | null;
@@ -158,7 +181,7 @@ function buildView(args: {
   now: number;
   log: Logger;
 }): PositionView {
-  const { pool, meta, data, activeBinId, managed, pnl, now, log } = args;
+  const { cfg, pool, meta, data, activeBinId, managed, pnl, now, log } = args;
 
   const decimalsX = pool.tokenX.mint.decimals;
   const decimalsY = pool.tokenY.mint.decimals;
@@ -233,6 +256,7 @@ function buildView(args: {
           openedAt: managed.openedAt,
           timeInRangePct:
             managed.pollsTotal > 0 ? (managed.pollsInRange / managed.pollsTotal) * 100 : null,
+          triggers: triggerView(cfg, managed),
         }
       : null,
 
@@ -263,6 +287,33 @@ function buildView(args: {
  * response: `fees["24h"] / tvl` reproduces `fee_tvl_ratio["24h"]` exactly, so it is
  * already a percent and directly comparable.
  */
+/**
+ * A position's trigger state with the config fallback already applied.
+ *
+ * The same `?? cfg` resolution `thresholdsFor` performs, done once here so the
+ * client never has to know which value came from where — only whether it was
+ * overridden, which is worth showing.
+ */
+function triggerView(cfg: Config, managed: ManagedPosition) {
+  const t = managed.triggers;
+  const stopLoss = t?.stopLoss ?? cfg.stopLoss;
+  const takeProfit = t?.takeProfit ?? cfg.takeProfit;
+  return {
+    on: t?.on ?? false,
+    measure: cfg.triggerMeasure,
+    stopLoss: stopLoss ?? null,
+    takeProfit: takeProfit ?? null,
+    onFire: t?.onFire ?? cfg.triggerOnFire,
+    overridden: t?.stopLoss !== undefined || t?.takeProfit !== undefined || t?.onFire !== undefined,
+    streak: t?.streak ?? 0,
+    confirmations: cfg.triggerConfirmations,
+    lastReading: t?.lastReading ?? null,
+    lastCheckAt: t?.lastCheckAt ?? null,
+    refusals: t?.refusals ?? 0,
+    disarmedReason: t?.disarmedReason ?? null,
+  };
+}
+
 function buildFeeRate(args: {
   pnl: PositionPnL | null;
   valueUsd: number;

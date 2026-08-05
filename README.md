@@ -141,6 +141,14 @@ would attach an absurd priority fee to every transaction).
 | `MAX_TOPUP_USD` | `5` | Ceiling on a single top-up. Must be `>= MIN_QUOTE_BALANCE_USD` |
 | `APE_AUTO_MANAGE` | `false` | Whether a position opened by APE is enrolled in auto-rebalancing straight away |
 | `ZAP_OUT_TO` | `y` | Which side ZAP OUT consolidates into — `y` (quote) or `x` (base). A side, not a named token |
+| `TRIGGERS_ARMED` | `false` | Whether a crossed stop loss / take profit actually closes the position. `false` still evaluates and alerts |
+| `TRIGGER_MEASURE` | `pct` | Whether the thresholds below are `pct` (PnL % change) or `usd` |
+| `STOP_LOSS` | unset | Close at or below this PnL. Must be negative; blank disables |
+| `TAKE_PROFIT` | unset | Close at or above this PnL. Must be positive; blank disables |
+| `TRIGGER_CONFIRMATIONS` | `3` | Consecutive readings past a threshold before anything closes — see below |
+| `TRIGGER_CHECK_MIN` | `2` | How often an armed position's PnL is checked |
+| `TRIGGER_ON_FIRE` | `zap-y` | What firing does: `zap-y`, `zap-x`, or `exit` (keep both tokens) |
+| `TRIGGER_MIN_AGE_MIN` | `30` | Positions younger than this are never triggered |
 | `API_TOKEN` | unset | Bearer token for every mutating endpoint and the login gate |
 | `ENABLE_WALLET_UI` | `false` | Allow creating/importing a key from the browser (needs `API_TOKEN`) |
 
@@ -323,6 +331,57 @@ along with everything else. The rent should come back as SOL.
 A position already entirely in the target token skips the swap and is simply an exit. Under
 `DRY_RUN` the exit is simulated and the swap leg is not, for the same reason Ape's open leg isn't:
 it would sell tokens the exit never actually released.
+
+## Stop loss and take profit
+
+A managed position can close itself when its PnL crosses a threshold. The **TRIGGERS** button on a
+position card arms it; the thresholds themselves default to the globals above and can be overridden
+per position. Firing runs the same zap out described here, or a plain `EXIT` if you would rather keep
+both tokens.
+
+**Nothing is armed by default, and arming is per position.** Setting `STOP_LOSS` in SETTINGS
+configures a default; it does not switch anything on. This differs from every other setting in the
+app deliberately: a rebalance that goes wrong can be retried, but a fired trigger closes the position
+and there is no undo — reopening pays bin-array rent, and that rent is never recoverable.
+
+**The number being watched is the indexer's PnL, which includes impermanent loss.** A stop loss on it
+is not "fees went negative". A position earning fees perfectly well can hit one purely because the
+pair diverged, which is a real thing to want to stop out of, but it is worth knowing that is what the
+number means.
+
+### Why confirmations exist
+
+`pnlUsd` is copied verbatim from Meteora's Data API, which is eventually consistent. On 2026-07-30 it
+reported **−$43.56** for about ten seconds on a position that was actually up $1.32: it had indexed a
+path-B rebalance's withdraw leg and not yet its deposit, so the swing was the withdrawn amount almost
+exactly. A stop loss reading that number naively would have closed a healthy position, irreversibly,
+for a figure that was wrong for ten seconds.
+
+So a threshold has to hold for `TRIGGER_CONFIRMATIONS` consecutive readings, and a single reading
+back inside resets the count to zero rather than decaying it. Two further guards come from the same
+incident: nothing is evaluated within two minutes of a rebalance landing (the same settle window the
+PnL sampler uses), and nothing is evaluated while a journal entry is pending, since an unresolved
+entry means the position really is missing a leg. `TRIGGER_MIN_AGE_MIN` covers the other end — a
+position the indexer has not priced yet must not trip a stop on its first minute.
+
+### Alert-only, and what DRY-RUN does
+
+With `TRIGGERS_ARMED=false` every threshold is still checked and still alerts over Telegram; it just
+never acts. That is the intended way to run a new pair of numbers for a week before handing them the
+ability to close a position on real funds.
+
+`DRY_RUN` behaves the same way rather than simulating the close, which is a deliberate difference
+from the rest of the app. A simulated zap out cannot exercise its swap leg — the exit whose proceeds
+it would sell never happened — so a green simulation would be evidence of nothing while looking like
+evidence of everything.
+
+### When the close is refused
+
+The zap out quotes its route **before** closing, so a trigger can fire and still correctly decline on
+`MAX_SWAP_PRICE_IMPACT_BPS`. The position stays open and you get an alert. It retries on the next
+check, because a thin route usually recovers within minutes — but after five consecutive refusals the
+position **disarms itself** and says so loudly. An illiquid pair that alerted every two minutes
+forever would train you to ignore the alerts, which is worse than a stop that stopped.
 
 ## Does the automation pay?
 

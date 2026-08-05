@@ -11,6 +11,7 @@ import {
   type RebalancePlan,
 } from "./meteora/rebalance.js";
 import { rangeStatus } from "./meteora/pricing.js";
+import { TriggerRunner } from "./triggers.js";
 
 /** How stale a pending journal entry must be before a tick retries it. */
 const RESUME_RETRY_MS = 120_000;
@@ -36,12 +37,17 @@ export class Engine {
   // the way back up. Without this a wallet parked below the reserve would page
   // every poll interval forever.
   private lowBalanceAlerted = false;
+  private readonly triggers: TriggerRunner;
 
   constructor(
     private readonly ctx: AppContext,
     private readonly deps: RebalanceDeps,
     private readonly notifier: Notifier,
-  ) {}
+  ) {
+    // RebalanceDeps is a superset of ZapOutDeps, so a fired stop loss closes the
+    // position through exactly the machinery the ZAP OUT button uses.
+    this.triggers = new TriggerRunner(ctx, deps, (pk) => this.busy.has(pk));
+  }
 
   start(): void {
     if (this.timer) return;
@@ -95,7 +101,9 @@ export class Engine {
         }
       }
 
-      const positions = this.ctx.store.positions();
+      // Copied, not the store's live array: a fired trigger removes a position
+      // mid-tick, and iterating a list that is being spliced skips entries.
+      const positions = [...this.ctx.store.positions()];
       if (positions.length === 0) return;
 
       // Writes a PnL reading when the sample interval has elapsed, and returns
@@ -103,7 +111,19 @@ export class Engine {
       // on a tick where evaluating a position throws.
       await this.ctx.sampler.maybeSample();
 
+      /**
+       * Stop loss and take profit, BEFORE the rebalance loop.
+       *
+       * Order matters both ways round. A position about to be closed must not
+       * first be rebalanced — that would pay bin-array rent on a range it is
+       * about to leave. And a position the trigger closed must not then be
+       * evaluated at all, which is what the returned set is for: `positions` was
+       * snapshotted above and still holds the ones that just ceased to exist.
+       */
+      const fired = await this.triggers.run();
+
       for (const managed of positions) {
+        if (fired.has(managed.positionPk)) continue;
         try {
           await this.evaluateAndAct(managed);
         } catch (e) {

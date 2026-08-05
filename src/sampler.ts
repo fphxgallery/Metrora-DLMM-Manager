@@ -4,6 +4,24 @@ import type { MeteoraClient } from "./meteora/client.js";
 import type { Store } from "./state.js";
 import type { PnlSample, SampleLog } from "./history.js";
 
+/**
+ * How long after a rebalance the indexer's numbers are not to be trusted.
+ *
+ * `pnlUsd` is taken verbatim from the Data API, which is eventually consistent.
+ * Measured on the live position 2026-07-30: a path-B rebalance completed at
+ * 18:12:24 having moved 45.22 USDC out of the position and back; the sample ten
+ * seconds later read -$43.56 against +$1.32 before and +$1.72 after. The swing of
+ * $44.88 is the withdrawn leg almost exactly — the indexer had seen the withdraw
+ * and not yet the deposit, and the sampler faithfully wrote down a number that
+ * was briefly wrong.
+ *
+ * Two minutes is generous next to the ten seconds observed, and costs at most one
+ * skipped reading out of a 15-minute cadence. Exported because the stop loss owes
+ * the same scepticism to the same number, and there should be one figure rather
+ * than two that drift apart.
+ */
+export const INDEXER_SETTLE_MS = 120_000;
+
 export interface SamplerDeps {
   store: Store;
   dataApi: DataApi;
@@ -32,22 +50,6 @@ export class Sampler {
   private inFlight = false;
 
   constructor(private readonly deps: SamplerDeps) {}
-
-  /**
-   * How long after a rebalance the indexer's numbers are not to be trusted.
-   *
-   * `pnlUsd` is taken verbatim from the Data API, which is eventually
-   * consistent. Measured on the live position 2026-07-30: a path-B rebalance
-   * completed at 18:12:24 having moved 45.22 USDC out of the position and back;
-   * the sample ten seconds later read -$43.56 against +$1.32 before and +$1.72
-   * after. The swing of $44.88 is the withdrawn leg almost exactly — the indexer
-   * had seen the withdraw and not yet the deposit, and the sampler faithfully
-   * wrote down a number that was briefly wrong.
-   *
-   * Two minutes is generous next to the ten seconds observed, and costs at most
-   * one skipped reading out of a 15-minute cadence.
-   */
-  private static readonly SETTLE_MS = 120_000;
 
   /** Cheap to call every tick; does nothing until the interval has elapsed. */
   async maybeSample(now = Date.now()): Promise<void> {
@@ -100,7 +102,7 @@ export class Sampler {
   private recentlyRebalanced(now: number): string | null {
     for (const p of this.deps.store.positions()) {
       const last = p.lastRebalanceAt;
-      if (last !== undefined && now - last < Sampler.SETTLE_MS) return p.positionPk;
+      if (last !== undefined && now - last < INDEXER_SETTLE_MS) return p.positionPk;
     }
     return null;
   }

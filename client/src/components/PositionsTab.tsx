@@ -3,6 +3,26 @@ import { api, type Settings } from "../api.ts";
 import { fmtAgo, fmtAmount, fmtNum, fmtPct, fmtPrice, fmtUsd } from "../format.ts";
 import { WalletPanel } from "./WalletPanel.tsx";
 
+/**
+ * Stop loss / take profit as the engine would apply them — the server has
+ * already folded any per-position override into the global default, so `stopLoss`
+ * here is the number that would actually fire.
+ */
+export interface TriggerView {
+  on: boolean;
+  measure: "pct" | "usd";
+  stopLoss: number | null;
+  takeProfit: number | null;
+  onFire: string;
+  overridden: boolean;
+  streak: number;
+  confirmations: number;
+  lastReading: number | null;
+  lastCheckAt: number | null;
+  refusals: number;
+  disarmedReason: string | null;
+}
+
 export interface PositionView {
   positionPk: string;
   poolAddress: string;
@@ -38,6 +58,7 @@ export interface PositionView {
     lastRebalanceAt?: number;
     openedAt: number;
     timeInRangePct: number | null;
+    triggers: TriggerView;
   } | null;
   feeRate: {
     positionPctPer24h: number | null;
@@ -150,6 +171,7 @@ function PositionCard({
   const [logs, setLogs] = useState<string[] | null>(null);
   const [ok, setOk] = useState("");
   const [confirmExit, setConfirmExit] = useState(false);
+  const [showTriggers, setShowTriggers] = useState(false);
   // Zap out closes the position BEFORE it swaps, so the preview is not a
   // nicety: it is where an unroutable position is refused while it still
   // exists. There is deliberately no way to confirm without one.
@@ -244,6 +266,11 @@ function PositionCard({
           <span className="faint">bin step {p.binStep}</span>
           <span className={`pill ${p.inRange ? "good" : "bad"}`}>{p.inRange ? "IN RANGE" : "OUT OF RANGE"}</span>
           {p.managed?.auto && <span className="pill good">AUTO</span>}
+          {p.managed?.triggers.on && (
+            <span className="pill warn" title={`fires ${onFireLabel(p.managed.triggers.onFire)} after ${p.managed.triggers.confirmations} confirming readings`}>
+              {thresholdSummary(p.managed.triggers)}
+            </span>
+          )}
           {drifted && <span className="pill warn">ONE-SIDED</span>}
           <span style={{ marginLeft: 6 }}>{fmtUsd(p.valueUsd)}</span>
           <span className="fact-sub">
@@ -280,6 +307,11 @@ function PositionCard({
           <button className="btn" disabled={anyBusy} onClick={() => void previewZap()}>
             {busy === "zap" && !zapping ? "…" : "ZAP OUT"}
           </button>
+          {p.managed && (
+            <button className={`btn${showTriggers ? " primary" : ""}`} disabled={anyBusy} onClick={() => setShowTriggers(!showTriggers)}>
+              TRIGGERS
+            </button>
+          )}
           {confirmExit ? (
             <>
               <button
@@ -395,6 +427,10 @@ function PositionCard({
         </div>
       )}
 
+      {showTriggers && p.managed && (
+        <TriggersPanel p={p} triggers={p.managed.triggers} onChanged={onChanged} disabled={anyBusy} />
+      )}
+
       {ok && <div className="msg ok">{ok}</div>}
       {error && <div className="msg err">{error}</div>}
       {logs && (
@@ -455,6 +491,180 @@ function PositionCard({
       </div>
     </div>
   );
+}
+
+/** "SL −15% · TP +40%", or whichever half is set. */
+function thresholdSummary(t: TriggerView): string {
+  const parts: string[] = [];
+  if (t.stopLoss != null) parts.push(`SL ${fmtThreshold(t.stopLoss, t.measure)}`);
+  if (t.takeProfit != null) parts.push(`TP ${fmtThreshold(t.takeProfit, t.measure)}`);
+  return parts.length > 0 ? parts.join(" · ") : "NO THRESHOLD";
+}
+
+function fmtThreshold(n: number, measure: TriggerView["measure"]): string {
+  return measure === "usd" ? fmtUsd(n) : `${n > 0 ? "+" : ""}${n}%`;
+}
+
+function onFireLabel(onFire: string): string {
+  if (onFire === "exit") return "an exit, keeping both tokens";
+  return `a zap out to the ${onFire === "zap-x" ? "X (base)" : "Y (quote)"} side`;
+}
+
+/**
+ * Arms this position's stop loss and take profit.
+ *
+ * Deliberately its own panel behind a button rather than another row of facts:
+ * this is the one control on the card that can close the position without anyone
+ * watching, and the distance-to-threshold readout underneath it is the thing
+ * that says whether the numbers above are sane before they are armed.
+ */
+function TriggersPanel({
+  p,
+  triggers,
+  onChanged,
+  disabled,
+}: {
+  p: PositionView;
+  triggers: TriggerView;
+  onChanged: () => void;
+  disabled: boolean;
+}) {
+  // Blank means "use the global", which is why these start from the OVERRIDE and
+  // not from the effective value — prefilling the inherited number would turn
+  // every save into an override of a default the operator never meant to pin.
+  const [stopLoss, setStopLoss] = useState(triggers.overridden && triggers.stopLoss != null ? String(triggers.stopLoss) : "");
+  const [takeProfit, setTakeProfit] = useState(
+    triggers.overridden && triggers.takeProfit != null ? String(triggers.takeProfit) : "",
+  );
+  const [onFire, setOnFire] = useState(triggers.overridden ? triggers.onFire : "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save(patch: Record<string, unknown>) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.post(`/api/positions/${p.positionPk}/triggers`, patch);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const armed = triggers.on;
+  const reading = triggers.lastReading;
+  const unit = triggers.measure === "usd" ? "$" : "%";
+
+  return (
+    <div className="msg" style={{ borderColor: armed ? "var(--warn)" : "var(--border)" }}>
+      <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        <span className="faint">TRIGGERS</span>
+        <div className="segmented">
+          <button
+            type="button"
+            className={armed ? "active" : ""}
+            disabled={disabled || busy}
+            onClick={() => void save({ on: true })}
+          >
+            ON
+          </button>
+          <button
+            type="button"
+            className={armed ? "" : "active"}
+            disabled={disabled || busy}
+            onClick={() => void save({ on: false })}
+          >
+            OFF
+          </button>
+        </div>
+        <span className="faint" style={{ textTransform: "none", letterSpacing: 0 }}>
+          {triggers.overridden ? "using this position's thresholds" : "using the global thresholds"}
+        </span>
+      </div>
+
+      <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        <label className="field" style={{ minWidth: 130, marginBottom: 0 }}>
+          <span>Stop loss ({unit})</span>
+          <input value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder={fallback(triggers.stopLoss)} />
+        </label>
+        <label className="field" style={{ minWidth: 130, marginBottom: 0 }}>
+          <span>Take profit ({unit})</span>
+          <input value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder={fallback(triggers.takeProfit)} />
+        </label>
+        <label className="field" style={{ minWidth: 190, marginBottom: 0 }}>
+          <span>On fire</span>
+          <select value={onFire} onChange={(e) => setOnFire(e.target.value)}>
+            <option value="">global — {onFireLabel(triggers.onFire)}</option>
+            <option value="zap-y">zap out to QUOTE (Y)</option>
+            <option value="zap-x">zap out to BASE (X)</option>
+            <option value="exit">exit — keep both tokens</option>
+          </select>
+        </label>
+        <button
+          className="btn"
+          disabled={disabled || busy}
+          onClick={() =>
+            void save({
+              // null is "clear the override and fall back to the global", which is
+              // a different instruction from leaving the field out entirely.
+              stopLoss: stopLoss.trim() === "" ? null : Number(stopLoss),
+              takeProfit: takeProfit.trim() === "" ? null : Number(takeProfit),
+              onFire: onFire === "" ? null : onFire,
+            })
+          }
+        >
+          {busy ? "…" : "SAVE THRESHOLDS"}
+        </button>
+      </div>
+
+      <div className="row" style={{ gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
+        <span className="fact-sub">
+          now {reading == null ? "—" : fmtThreshold(round2(reading), triggers.measure)}
+        </span>
+        <span className="fact-sub">to stop {distance(reading, triggers.stopLoss)}</span>
+        <span className="fact-sub">to target {distance(reading, triggers.takeProfit)}</span>
+        <span className="fact-sub">
+          confirmed {triggers.streak} of {triggers.confirmations}
+        </span>
+        <span className="fact-sub">
+          last check {triggers.lastCheckAt ? fmtAgo(triggers.lastCheckAt) : "never"}
+        </span>
+        {triggers.refusals > 0 && <span className="bad">refused {triggers.refusals}×</span>}
+      </div>
+
+      {triggers.disarmedReason && (
+        <div className="msg err" style={{ marginBottom: 10 }}>
+          Disarmed after repeated refusals — the position is still open and no longer protected. Last reason:{" "}
+          {triggers.disarmedReason}
+        </div>
+      )}
+
+      <div className="faint" style={{ textTransform: "none", letterSpacing: 0 }}>
+        Firing closes the position and cannot be undone — reopening pays bin-array rent that is never recoverable. The
+        threshold is the indexer's PnL, which includes impermanent loss, and it must hold for{" "}
+        {triggers.confirmations} consecutive readings.
+      </div>
+
+      {error && <div className="msg err" style={{ marginTop: 10 }}>{error}</div>}
+    </div>
+  );
+}
+
+/** Placeholder showing the inherited value a blank box would fall back to. */
+function fallback(v: number | null): string {
+  return v == null ? "off" : `${v} (global)`;
+}
+
+/** How far the current reading is from a threshold, in the measure's own points. */
+function distance(reading: number | null, threshold: number | null): string {
+  if (reading == null || threshold == null) return "—";
+  return `${round2(Math.abs(reading - threshold))}`;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 /**

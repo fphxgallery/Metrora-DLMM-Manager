@@ -15,6 +15,20 @@ function num(key: string, def?: number): number {
   if (!Number.isFinite(n)) throw new Error(`Env ${key} must be a number, got "${raw}"`);
   return n;
 }
+/**
+ * A number that may legitimately be absent, where absent means "off".
+ *
+ * Distinct from `num` with a default: a blank STOP_LOSS is not zero, it is no
+ * stop loss at all. Zero would be a threshold the position sits on from the
+ * moment it opens.
+ */
+function numOpt(key: string): number | undefined {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`Env ${key} must be a number or blank, got "${raw}"`);
+  return n;
+}
 function bool(key: string, def: boolean): boolean {
   const raw = process.env[key];
   if (raw === undefined || raw === "") return def;
@@ -23,6 +37,14 @@ function bool(key: string, def: boolean): boolean {
 
 export const STRATEGY_TYPES = ["Spot", "Curve", "BidAsk"] as const;
 export type StrategyTypeName = (typeof STRATEGY_TYPES)[number];
+
+/** What a fired stop loss / take profit does with the position. */
+export const TRIGGER_ACTIONS = ["zap-y", "zap-x", "exit"] as const;
+export type TriggerAction = (typeof TRIGGER_ACTIONS)[number];
+
+/** Whether a threshold is read as a percentage of PnL change or as dollars. */
+export const TRIGGER_MEASURES = ["pct", "usd"] as const;
+export type TriggerMeasure = (typeof TRIGGER_MEASURES)[number];
 
 export interface Config {
   // --- chain ---
@@ -77,6 +99,47 @@ export interface Config {
    * the default and the one that generalises.
    */
   zapOutTo: "x" | "y";
+
+  // --- position triggers (stop loss / take profit) ---
+  /**
+   * Whether a crossed threshold actually closes the position.
+   *
+   * OFF does not mean "do not evaluate": thresholds are still checked and still
+   * alert, they just never act. That is the intended way to run a new pair of
+   * numbers for a week before handing them the ability to close a position on
+   * real funds. DRY_RUN behaves the same way, for the same reason — a simulated
+   * zap out cannot prove the swap leg, since the exit it would sell the proceeds
+   * of never happened.
+   */
+  triggersArmed: boolean;
+  /** Whether STOP_LOSS/TAKE_PROFIT are percentages of PnL change or USD. */
+  triggerMeasure: TriggerMeasure;
+  /**
+   * Close when PnL falls to or below this. Negative; blank disables.
+   *
+   * PnL here is the indexer's, which includes impermanent loss — a position can
+   * be earning fees well and still hit a stop because the pair diverged. That is
+   * what the number means and it is not "fees went negative".
+   */
+  stopLoss?: number;
+  /** Close when PnL rises to or above this. Positive; blank disables. */
+  takeProfit?: number;
+  /**
+   * Consecutive readings past a threshold before anything fires.
+   *
+   * Not a nicety. `pnlUsd` comes verbatim from an eventually-consistent indexer,
+   * and on 2026-07-30 it reported -$43.56 for about ten seconds on a position
+   * actually at +$1.32 — it had seen a rebalance's withdraw leg and not yet the
+   * deposit. At 1 confirmation that reading closes a healthy position, for a
+   * number that was wrong, irreversibly.
+   */
+  triggerConfirmations: number;
+  /** How often a position's PnL is checked against its thresholds. */
+  triggerCheckMin: number;
+  /** What firing does: consolidate into the Y side, the X side, or just exit. */
+  triggerOnFire: TriggerAction;
+  /** Positions younger than this are never triggered — the indexer lags a new one. */
+  triggerMinAgeMin: number;
 
   // --- pnl history ---
   /** How often each managed position's PnL is written to the sample log. */
@@ -162,6 +225,18 @@ export function loadConfig(): Config {
     apeAutoManage: bool("APE_AUTO_MANAGE", false),
     zapOutTo: str("ZAP_OUT_TO", "y") as Config["zapOutTo"],
 
+    triggersArmed: bool("TRIGGERS_ARMED", false),
+    triggerMeasure: str("TRIGGER_MEASURE", "pct") as TriggerMeasure,
+    stopLoss: numOpt("STOP_LOSS"),
+    takeProfit: numOpt("TAKE_PROFIT"),
+    // Three at the default two-minute cadence is roughly six minutes of
+    // agreement before anything closes — long next to the ten-second indexer
+    // blip that motivates it, short next to any move worth stopping out of.
+    triggerConfirmations: num("TRIGGER_CONFIRMATIONS", 3),
+    triggerCheckMin: num("TRIGGER_CHECK_MIN", 2),
+    triggerOnFire: str("TRIGGER_ON_FIRE", "zap-y") as TriggerAction,
+    triggerMinAgeMin: num("TRIGGER_MIN_AGE_MIN", 30),
+
     // 15 minutes gives 96 readings a day — a dense 24h chart at ~8,600 rows per
     // position over the 90-day window, which is nothing as an appended log and
     // would be unworkable inside state.json.
@@ -238,6 +313,34 @@ function validate(cfg: Config): void {
   }
   if (cfg.zapOutTo !== "x" && cfg.zapOutTo !== "y") {
     throw new Error(`ZAP_OUT_TO must be "x" (base) or "y" (quote); got "${cfg.zapOutTo}"`);
+  }
+  if (!(TRIGGER_MEASURES as readonly string[]).includes(cfg.triggerMeasure)) {
+    throw new Error(`TRIGGER_MEASURE must be one of: ${TRIGGER_MEASURES.join(", ")} (got "${cfg.triggerMeasure}")`);
+  }
+  if (!(TRIGGER_ACTIONS as readonly string[]).includes(cfg.triggerOnFire)) {
+    throw new Error(`TRIGGER_ON_FIRE must be one of: ${TRIGGER_ACTIONS.join(", ")} (got "${cfg.triggerOnFire}")`);
+  }
+  // Signs are enforced rather than inferred. A positive STOP_LOSS would sit above
+  // a healthy position's PnL and close it on the first check — the exact opposite
+  // of what the operator asked for, and irreversibly.
+  if (cfg.stopLoss !== undefined && !(cfg.stopLoss < 0)) {
+    throw new Error(
+      `STOP_LOSS must be negative — it is the loss at which the position is closed; got ${cfg.stopLoss}. Leave it blank to disable.`,
+    );
+  }
+  if (cfg.takeProfit !== undefined && !(cfg.takeProfit > 0)) {
+    throw new Error(
+      `TAKE_PROFIT must be positive — it is the gain at which the position is closed; got ${cfg.takeProfit}. Leave it blank to disable.`,
+    );
+  }
+  if (!Number.isInteger(cfg.triggerConfirmations) || cfg.triggerConfirmations < 1) {
+    throw new Error(`TRIGGER_CONFIRMATIONS must be an integer >= 1 (got ${cfg.triggerConfirmations})`);
+  }
+  if (!(cfg.triggerCheckMin > 0)) {
+    throw new Error(`TRIGGER_CHECK_MIN must be > 0 (got ${cfg.triggerCheckMin})`);
+  }
+  if (cfg.triggerMinAgeMin < 0) {
+    throw new Error(`TRIGGER_MIN_AGE_MIN must be >= 0 (got ${cfg.triggerMinAgeMin})`);
   }
   if (cfg.cooldownMin < 0) throw new Error(`COOLDOWN_MIN must be >= 0 (got ${cfg.cooldownMin})`);
   if (cfg.minQuoteBalanceUsd < 0) {

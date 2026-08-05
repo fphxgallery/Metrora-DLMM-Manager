@@ -82,6 +82,14 @@ const EDITABLE_KEYS = new Set([
   "MAX_TOPUP_USD",
   "APE_AUTO_MANAGE",
   "ZAP_OUT_TO",
+  "TRIGGERS_ARMED",
+  "TRIGGER_MEASURE",
+  "STOP_LOSS",
+  "TAKE_PROFIT",
+  "TRIGGER_CONFIRMATIONS",
+  "TRIGGER_CHECK_MIN",
+  "TRIGGER_ON_FIRE",
+  "TRIGGER_MIN_AGE_MIN",
   // POLL_INTERVAL_MS is deliberately absent: the engine captures it once into
   // setInterval, so editing it here would not take effect until a restart anyway.
 ]);
@@ -383,6 +391,16 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       MAX_TOPUP_USD: cfg.maxTopUpUsd,
       APE_AUTO_MANAGE: cfg.apeAutoManage,
       ZAP_OUT_TO: cfg.zapOutTo,
+      TRIGGERS_ARMED: cfg.triggersArmed,
+      TRIGGER_MEASURE: cfg.triggerMeasure,
+      // Empty string rather than null: a disabled threshold has to round-trip
+      // back through the form as an empty box, and `String(null)` is "null".
+      STOP_LOSS: cfg.stopLoss ?? "",
+      TAKE_PROFIT: cfg.takeProfit ?? "",
+      TRIGGER_CONFIRMATIONS: cfg.triggerConfirmations,
+      TRIGGER_CHECK_MIN: cfg.triggerCheckMin,
+      TRIGGER_ON_FIRE: cfg.triggerOnFire,
+      TRIGGER_MIN_AGE_MIN: cfg.triggerMinAgeMin,
       POLL_INTERVAL_MS: cfg.pollIntervalMs,
       DRY_RUN: isDryRun(ctx),
       CLUSTER: cfg.cluster,

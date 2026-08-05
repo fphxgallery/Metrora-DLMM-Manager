@@ -41,6 +41,14 @@ const NUMERIC_FIELDS: { key: string; label: string; hint: string }[] = [
   },
 ];
 
+/** The sub-caption style the hints under every field share. */
+const hint = { textTransform: "none", letterSpacing: 0, fontSize: 11 } as const;
+
+/** Threshold fields are the same box whichever measure is selected; only the unit differs. */
+function unit(measure: string | undefined): string {
+  return measure === "usd" ? "$" : "%";
+}
+
 export function SettingsTab({ onChanged }: { onChanged: () => void }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
@@ -58,6 +66,16 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
     f.AUTO_TOPUP = s.config.AUTO_TOPUP ? "true" : "false";
     f.APE_AUTO_MANAGE = s.config.APE_AUTO_MANAGE ? "true" : "false";
     f.ZAP_OUT_TO = String(s.config.ZAP_OUT_TO ?? "y");
+    f.TRIGGERS_ARMED = s.config.TRIGGERS_ARMED ? "true" : "false";
+    f.TRIGGER_MEASURE = String(s.config.TRIGGER_MEASURE ?? "pct");
+    // Blank means disabled, so `?? ""` is load-bearing rather than a nicety —
+    // String(undefined) would put the word "undefined" in the box and then post it.
+    f.STOP_LOSS = String(s.config.STOP_LOSS ?? "");
+    f.TAKE_PROFIT = String(s.config.TAKE_PROFIT ?? "");
+    f.TRIGGER_CONFIRMATIONS = String(s.config.TRIGGER_CONFIRMATIONS ?? 3);
+    f.TRIGGER_CHECK_MIN = String(s.config.TRIGGER_CHECK_MIN ?? 2);
+    f.TRIGGER_ON_FIRE = String(s.config.TRIGGER_ON_FIRE ?? "zap-y");
+    f.TRIGGER_MIN_AGE_MIN = String(s.config.TRIGGER_MIN_AGE_MIN ?? 30);
     setForm(f);
   }
 
@@ -185,6 +203,101 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
         </button>
         <div className="faint" style={{ marginTop: 8 }}>
           Values are validated before they are written — a bad value is rejected, not persisted.
+        </div>
+      </div>
+
+      <div className="panel">
+        <h2>
+          Position triggers{" "}
+          <span className={`pill ${form.TRIGGERS_ARMED === "true" ? "warn" : ""}`}>
+            {form.TRIGGERS_ARMED === "true" ? "armed" : "alert only"}
+          </span>
+        </h2>
+        <div className="grid-2">
+          <label className="field">
+            <span>Triggers</span>
+            <select value={form.TRIGGERS_ARMED ?? "false"} onChange={(e) => setForm({ ...form, TRIGGERS_ARMED: e.target.value })}>
+              <option value="false">ALERT ONLY — evaluate, never close</option>
+              <option value="true">ARMED — close the position</option>
+            </select>
+            <span className="faint" style={hint}>
+              Alert only still checks every threshold and still sends Telegram; it just never acts. DRY-RUN behaves the
+              same way — a simulated close cannot exercise the swap that follows it, so it would prove nothing.
+            </span>
+          </label>
+          <label className="field">
+            <span>Measure</span>
+            <select value={form.TRIGGER_MEASURE ?? "pct"} onChange={(e) => setForm({ ...form, TRIGGER_MEASURE: e.target.value })}>
+              <option value="pct">PnL % change</option>
+              <option value="usd">PnL $</option>
+            </select>
+            <span className="faint" style={hint}>
+              The indexer's PnL, which includes impermanent loss. A position earning fees well can still hit a stop
+              because the pair diverged — this is not "fees went negative".
+            </span>
+          </label>
+          <label className="field">
+            <span>Stop loss ({unit(form.TRIGGER_MEASURE)})</span>
+            <input value={form.STOP_LOSS ?? ""} onChange={(e) => setForm({ ...form, STOP_LOSS: e.target.value })} placeholder="blank = off" />
+            <span className="faint" style={hint}>
+              Must be negative. Blank disables it.
+            </span>
+          </label>
+          <label className="field">
+            <span>Take profit ({unit(form.TRIGGER_MEASURE)})</span>
+            <input value={form.TAKE_PROFIT ?? ""} onChange={(e) => setForm({ ...form, TAKE_PROFIT: e.target.value })} placeholder="blank = off" />
+            <span className="faint" style={hint}>
+              Must be positive. Blank disables it.
+            </span>
+          </label>
+          <label className="field">
+            <span>Confirmations</span>
+            <input
+              value={form.TRIGGER_CONFIRMATIONS ?? ""}
+              onChange={(e) => setForm({ ...form, TRIGGER_CONFIRMATIONS: e.target.value })}
+            />
+            <span className="faint" style={hint}>
+              Consecutive readings past the threshold before anything closes. 1 is not advisable: the indexer once
+              reported −$43 for ten seconds on a position actually up $1, having seen a rebalance's withdraw and not its
+              deposit. A reading back inside resets the count to zero.
+            </span>
+          </label>
+          <label className="field">
+            <span>Check interval (min)</span>
+            <input value={form.TRIGGER_CHECK_MIN ?? ""} onChange={(e) => setForm({ ...form, TRIGGER_CHECK_MIN: e.target.value })} />
+            <span className="faint" style={hint}>
+              Confirmations × this is the worst-case delay between a threshold being crossed and the position closing.
+            </span>
+          </label>
+          <label className="field">
+            <span>On fire</span>
+            <select value={form.TRIGGER_ON_FIRE ?? "zap-y"} onChange={(e) => setForm({ ...form, TRIGGER_ON_FIRE: e.target.value })}>
+              <option value="zap-y">ZAP OUT to QUOTE — the pool's Y side</option>
+              <option value="zap-x">ZAP OUT to BASE — the pool's X side</option>
+              <option value="exit">EXIT — close and keep both tokens</option>
+            </select>
+            <span className="faint" style={hint}>
+              Zap out closes before it swaps. The route is quoted first, so an unroutable position is refused while it
+              still exists — but if the swap fails after the close you hold both tokens and the position is gone.
+            </span>
+          </label>
+          <label className="field">
+            <span>Min position age (min)</span>
+            <input
+              value={form.TRIGGER_MIN_AGE_MIN ?? ""}
+              onChange={(e) => setForm({ ...form, TRIGGER_MIN_AGE_MIN: e.target.value })}
+            />
+            <span className="faint" style={hint}>
+              A position the indexer has not priced yet must not trip a stop on its first minute.
+            </span>
+          </label>
+        </div>
+        <button className="btn primary" disabled={busy} onClick={() => void saveConfig()}>
+          SAVE
+        </button>
+        <div className="faint" style={{ marginTop: 8 }}>
+          These are defaults. No position is armed until you turn triggers on for it in POSITIONS — firing is terminal,
+          and reopening pays bin-array rent that is never recoverable.
         </div>
       </div>
 
