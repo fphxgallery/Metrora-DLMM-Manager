@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Settings } from "../api.ts";
 import { fmtAgo, fmtAmount, fmtNum, fmtPct, fmtPrice, fmtUsd } from "../format.ts";
+import { gaugeGeometry, type GaugeGeometry } from "../gauge.ts";
 import { WalletPanel } from "./WalletPanel.tsx";
 
 /**
@@ -556,10 +557,11 @@ function TriggersPanel({
   const armed = triggers.on;
   const reading = triggers.lastReading;
   const unit = triggers.measure === "usd" ? "$" : "%";
+  const geo = gaugeGeometry(reading, triggers.stopLoss, triggers.takeProfit);
 
   return (
     <div className="msg" style={{ borderColor: armed ? "var(--warn)" : "var(--border)" }}>
-      <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+      <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <span className="faint">TRIGGERS</span>
         <div className="segmented">
           <button
@@ -579,12 +581,21 @@ function TriggersPanel({
             OFF
           </button>
         </div>
-        <span className="faint" style={{ textTransform: "none", letterSpacing: 0 }}>
-          {triggers.overridden ? "using this position's thresholds" : "using the global thresholds"}
+        <span className={triggers.overridden ? "tg-pill warn" : "tg-pill"}>
+          {triggers.overridden ? "this position's thresholds" : "global thresholds"}
+        </span>
+        <span className="tg-sep" />
+        <span className="fact-sub">
+          {triggers.refusals > 0 && <span className="bad">refused {triggers.refusals}× · </span>}
+          checked {triggers.lastCheckAt ? fmtAgo(triggers.lastCheckAt) : "never"}
         </span>
       </div>
 
-      <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+      <TriggerGauge triggers={triggers} geo={geo} />
+
+      <hr className="tg-rule" />
+
+      <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label className="field" style={{ minWidth: 130, marginBottom: 0 }}>
           <span>Stop loss ({unit})</span>
           <input value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder={fallback(triggers.stopLoss)} />
@@ -617,38 +628,129 @@ function TriggersPanel({
         >
           {busy ? "…" : "SAVE THRESHOLDS"}
         </button>
-      </div>
-
-      <div className="row" style={{ gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
-        <span className="fact-sub">
-          now {reading == null ? "—" : fmtThreshold(round2(reading), triggers.measure)}
-        </span>
-        <span className="fact-sub">to stop {distance(reading, triggers.stopLoss)}</span>
-        <span className="fact-sub">to target {distance(reading, triggers.takeProfit)}</span>
-        <span className="fact-sub">
-          confirmed {triggers.streak} of {triggers.confirmations}
-        </span>
-        <span className="fact-sub">
-          last check {triggers.lastCheckAt ? fmtAgo(triggers.lastCheckAt) : "never"}
-        </span>
-        {triggers.refusals > 0 && <span className="bad">refused {triggers.refusals}×</span>}
+        <span className="tg-sep" />
+        <Confirmations streak={triggers.streak} of={triggers.confirmations} />
       </div>
 
       {triggers.disarmedReason && (
-        <div className="msg err" style={{ marginBottom: 10 }}>
+        <div className="msg err" style={{ marginTop: 10 }}>
           Disarmed after repeated refusals — the position is still open and no longer protected. Last reason:{" "}
           {triggers.disarmedReason}
         </div>
       )}
 
-      <div className="faint" style={{ textTransform: "none", letterSpacing: 0 }}>
-        Firing closes the position and cannot be undone — reopening pays bin-array rent that is never recoverable. The
-        threshold is the indexer's PnL, which includes impermanent loss, and it must hold for{" "}
-        {triggers.confirmations} consecutive readings.
-      </div>
-
       {error && <div className="msg err" style={{ marginTop: 10 }}>{error}</div>}
     </div>
+  );
+}
+
+/**
+ * The stop, the live reading and the target on one axis.
+ *
+ * This is what replaced the paragraph that used to explain what the thresholds
+ * meant. The explanation was true but static; the distance to the thresholds is
+ * the thing that changes every check and the thing you open the panel to see.
+ */
+function TriggerGauge({ triggers, geo }: { triggers: TriggerView; geo: GaugeGeometry | null }) {
+  const reading = triggers.lastReading;
+  const m = triggers.measure;
+
+  if (!geo) {
+    return (
+      <div className="fact-sub">Nothing armed can fire — set a stop loss or a take profit below.</div>
+    );
+  }
+
+  // Amber once readings start stacking up. Off the ends the marker is pinned
+  // rather than placed, and the two ends do NOT mean the same thing: past the
+  // stop is the bad one, past the target is the position winning.
+  const state = geo.beyond === "lo" ? " pinned" : geo.beyond === "hi" ? " over" : triggers.streak > 0 ? " hot" : "";
+  const nowCls = geo.beyond === "lo" ? "bad" : geo.beyond === "hi" ? "good" : triggers.streak > 0 ? "warn" : undefined;
+
+  return (
+    <div className="tg-gauge">
+      <div className="tg-ends">
+        <span>
+          <span className="faint">STOP </span>
+          {triggers.stopLoss == null ? (
+            <span className="fact-sub">none</span>
+          ) : (
+            <span className="bad">{fmtThreshold(triggers.stopLoss, m)}</span>
+          )}
+        </span>
+        <span>
+          <span className="faint">NOW </span>
+          <span className={nowCls}>{reading == null ? "—" : fmtThreshold(round2(reading), m)}</span>
+        </span>
+        <span>
+          <span className="faint">TARGET </span>
+          {triggers.takeProfit == null ? (
+            <span className="fact-sub">none</span>
+          ) : (
+            <span className="good">{fmtThreshold(triggers.takeProfit, m)}</span>
+          )}
+        </span>
+      </div>
+
+      <div className="tg-track">
+        {geo.zeroPct != null && (
+          <div className="tg-zero" style={{ left: `${geo.zeroPct}%` }} title="break even" />
+        )}
+        {geo.pct != null && <div className={`tg-mark${state}`} style={{ left: `${geo.pct}%` }} />}
+      </div>
+
+      <div className="tg-foot">
+        <span className={geo.beyond === "lo" ? "bad" : undefined}>
+          {gap(reading, triggers.stopLoss, "stop", reading != null && triggers.stopLoss != null && reading < triggers.stopLoss)}
+        </span>
+        <span className={geo.beyond === "hi" && triggers.takeProfit != null ? "good" : undefined}>
+          {gap(reading, triggers.takeProfit, "target", reading != null && triggers.takeProfit != null && reading > triggers.takeProfit)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One end of the gauge's footer: how far there is left to go, if that is knowable.
+ *
+ * `past` matters. The distance is an absolute value, so without it a reading of
+ * -8% against a -1% stop rendered as "7.2 to stop" — which reads as seven points
+ * of headroom on a position that blew through its stop seven points ago.
+ */
+function gap(reading: number | null, threshold: number | null, label: string, past: boolean): string {
+  if (threshold == null) return `no ${label}`;
+  if (reading == null) return "—";
+  return `${distance(reading, threshold)} ${past ? "past" : "to"} the ${label}`;
+}
+
+/**
+ * How many consecutive readings have held, as dots.
+ *
+ * A trigger needs N in a row, so the interesting part is the progress, not the
+ * fraction — "confirmed 0 of 3" made you read a sentence to learn nothing has
+ * happened. Falls back to text past ten, where dots stop being countable.
+ */
+function Confirmations({ streak, of }: { streak: number; of: number }) {
+  const title = `${streak} of ${of} consecutive readings held`;
+  if (of > 10) {
+    return (
+      <span className="fact-sub" title={title}>
+        confirmed {streak} of {of}
+      </span>
+    );
+  }
+  return (
+    <span className="row" style={{ gap: 8 }} title={title}>
+      <span className="fact-sub">confirmations</span>
+      <span className="tg-dots">
+        {Array.from({ length: of }, (_, i) => (
+          <span key={i} className={i < streak ? "on" : undefined}>
+            ●
+          </span>
+        ))}
+      </span>
+    </span>
   );
 }
 

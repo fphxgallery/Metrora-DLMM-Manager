@@ -754,20 +754,36 @@ th.sortable.active {
 
 .segmented {
   display: flex;
+  /*
+    `flex: none`, because this sits inside `.row` flex containers. As a growable
+    item it was shrinking below its own contents, and `flex: 1` on the buttons
+    resolves to `flex-basis: 0` with shrinking allowed — buttons do not honour
+    the `min-width: auto` floor that keeps other flex items above their content
+    width, so "OFF" collapsed and broke mid-word.
+  */
+  flex: none;
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
 }
 
 .segmented button {
-  flex: 1;
+  /*
+    Grow to share the group, but never shrink past the label — `flex: 1` meant
+    `flex-basis: 0` plus shrinking, which is what collapsed the text. The floor
+    also keeps a two-state toggle's halves even, since "ON" and "OFF" size
+    differently from content alone.
+  */
+  flex: 1 0 auto;
+  min-width: 46px;
+  white-space: nowrap;
   background: var(--bg);
   border: none;
   border-right: 1px solid var(--border);
   color: var(--text-dim);
   font-family: inherit;
   font-size: 12px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   cursor: pointer;
 }
 
@@ -782,6 +798,127 @@ th.sortable.active {
 
 .segmented button:hover:not(.active) {
   color: var(--text);
+}
+
+/* ---------- trigger gauge ---------- */
+
+/*
+  Where the live PnL reading sits between the stop loss and the take profit.
+  This replaced a paragraph explaining what the thresholds meant — the distance
+  to them is the thing actually worth looking at, and it changes every check.
+*/
+.tg-gauge {
+  margin: 2px 0;
+}
+
+.tg-ends {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  margin-bottom: 5px;
+}
+
+.tg-track {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  /* Red at the stop end, green at the target end, neutral through the middle. */
+  background: linear-gradient(
+    90deg,
+    rgba(248, 113, 113, 0.55) 0%,
+    rgba(248, 113, 113, 0.16) 22%,
+    rgba(30, 40, 54, 0.5) 46%,
+    rgba(52, 211, 153, 0.16) 74%,
+    rgba(52, 211, 153, 0.5) 100%
+  );
+}
+
+.tg-zero {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--border-hot);
+}
+
+.tg-mark {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+  box-shadow: 0 0 8px rgba(214, 226, 240, 0.85);
+}
+
+/* The reading is inside a threshold band and about to confirm. */
+.tg-mark.hot {
+  background: var(--warn);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.9);
+}
+
+/*
+  Pinned at an end because the reading ran off the track. The two ends are not
+  the same event: past the stop is the loss the panel exists to catch, past the
+  target is the position winning, so they are not both red.
+*/
+.tg-mark.pinned {
+  background: var(--bad);
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.9);
+  width: 3px;
+}
+
+.tg-mark.over {
+  background: var(--good);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.9);
+  width: 3px;
+}
+
+.tg-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 5px;
+}
+
+.tg-dots {
+  letter-spacing: 3px;
+  color: var(--border-hot);
+}
+
+.tg-dots .on {
+  color: var(--warn);
+}
+
+.tg-pill {
+  border: 1px solid var(--border-hot);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.tg-pill.warn {
+  color: var(--warn);
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
+.tg-sep {
+  flex: 1;
+}
+
+hr.tg-rule {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
 }
 
 /* ---------- wallet bar ---------- */
