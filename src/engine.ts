@@ -12,6 +12,7 @@ import {
 } from "./meteora/rebalance.js";
 import { rangeStatus } from "./meteora/pricing.js";
 import { TriggerRunner } from "./triggers.js";
+import { rebalanceAlertHtml, snapshotBeforeRebalance } from "./alerts.js";
 
 /** How stale a pending journal entry must be before a tick retries it. */
 const RESUME_RETRY_MS = 120_000;
@@ -175,18 +176,36 @@ export class Engine {
     }
 
     this.busy.add(managed.positionPk);
+
+    /**
+     * Read BEFORE the rebalance, not after.
+     *
+     * The alert goes out seconds after the transaction lands, which is inside the
+     * window where the indexer is known to be wrong — so post-rebalance PnL in an
+     * alert would be the -$43.56 reading, sent to a phone. These figures describe
+     * the position going in, and the message says as much.
+     *
+     * Snapshotted before `lastAttemptAt` is stamped, so `last ...` in the alert
+     * still reports the previous rebalance rather than this one.
+     */
+    const snapshot = await snapshotBeforeRebalance(this.ctx, managed, decision.plan).catch((e) => {
+      this.ctx.log.debug({ err: e instanceof Error ? e.message : String(e) }, "alert snapshot failed");
+      return null;
+    });
+
     // Stamped before execution, so a rebalance that fails still starts a
     // cooldown. recordRebalance only fires on success.
     this.ctx.store.patchPosition(managed.positionPk, { lastAttemptAt: Date.now() });
     try {
       const outcome = await executeRebalance(this.deps, decision.plan);
-      if (!outcome.dryRun) {
-        const p = decision.plan;
-        this.notifier.notify(
-          `🔄 Rebalanced ${managed.pairName ?? p.poolAddress.slice(0, 8)} — ${decision.reason}\n` +
-            `range ${p.currentRange[0]}…${p.currentRange[1]} → ${p.targetRange[0]}…${p.targetRange[1]}` +
-            (p.swap ? `\nswapped ~$${p.swap.valueUsd.toFixed(2)} ${p.swap.fromSymbol}→${p.swap.toSymbol}` : "") +
-            `\ncost ≈ $${p.estCostUsd.toFixed(2)}`,
+      if (!outcome.dryRun && snapshot) {
+        this.notifier.notifyHtml(
+          rebalanceAlertHtml({
+            pairName: managed.pairName ?? decision.plan.poolAddress.slice(0, 8),
+            reason: decision.reason,
+            plan: decision.plan,
+            snapshot,
+          }),
         );
       }
     } catch (e) {

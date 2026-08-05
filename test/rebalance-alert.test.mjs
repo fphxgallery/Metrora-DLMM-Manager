@@ -1,0 +1,227 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { rebalanceAlertHtml, snapshotBeforeRebalance } from "../dist/alerts.js";
+
+// The alert is sent seconds after a rebalance lands, which is inside the two
+// minutes where the indexer is known to be wrong -- so every figure in it is read
+// BEFORE the rebalance runs. These pin that, the HTML escaping the monospace
+// block requires, and the way each figure degrades on its own.
+
+const NOW = 1_800_000_000_000;
+const MIN = 60_000;
+
+function plan(over = {}) {
+  return {
+    positionPk: "POS1",
+    poolAddress: "POOL1",
+    path: "A",
+    strategyType: "Spot",
+    activeBinId: 1700,
+    currentRange: [1712, 1772],
+    targetRange: [1685, 1745],
+    ratioBps: 5000,
+    valueInY: 0,
+    valueUsd: 74.73,
+    unclaimedFeesUsd: 0.9418,
+    estCostUsd: 0.21,
+    estCost: { txFeesLamports: 0, rentLamports: 0, swapImpactUsd: 0 },
+    ...over,
+  };
+}
+
+function snapshot(over = {}) {
+  return {
+    pnlUsd: -3.31,
+    pnlPctChange: -0.37,
+    lifetimeFeesUsd: 9.83,
+    claimedFeesUsd: 0.9418,
+    feePerDayUsd: 62.17,
+    positionFeeTvlPct: 86.64,
+    poolFeeTvlPct: 15.48,
+    rebalanceNumber: 8,
+    lastRebalanceAt: NOW - 41 * MIN,
+    ...over,
+  };
+}
+
+function render(over = {}, planOver = {}) {
+  return rebalanceAlertHtml({
+    pairName: "CATE-SOL",
+    reason: "active bin 3 from the edge",
+    plan: plan(planOver),
+    snapshot: snapshot(over),
+    now: NOW,
+  });
+}
+
+/** The text inside the <pre> block, which is where every figure lives. */
+function block(html) {
+  return html.match(/<pre>([\s\S]*?)<\/pre>/)[1].split("\n");
+}
+
+test("every figure the position card shows is in the alert", () => {
+  const rows = block(render()).join("\n");
+
+  assert.match(rows, /PnL\s+-\$3\.31\s+-0\.37%/);
+  assert.match(rows, /fees\s+\$0\.9418\s+≈\$62\.17\/day/);
+  assert.match(rows, /fee\/TVL\s+86\.64%\s+pool 15\.48%/);
+  assert.match(rows, /count\s+#8\s+last 41m/);
+  assert.match(rows, /lifetime\s+\$9\.83 fees/);
+});
+
+test("the columns actually line up", () => {
+  // The whole reason this variant needs parse_mode HTML is the monospace block.
+  // If the values do not start at the same offset the block buys nothing.
+  const rows = block(render()).filter((r) => /^(range|cost|PnL|fees|fee\/TVL|count|lifetime)/.test(r));
+
+  for (const r of rows) {
+    assert.equal(r[8], " ", `label column not padded to 9 in "${r}"`);
+    assert.notEqual(r[9], " ", `value column does not start at offset 9 in "${r}"`);
+  }
+
+  // Rows with a second column start it at 18. Those are the ones whose first
+  // value is short enough for the padding to be what puts it there.
+  const twoCol = rows.filter((r) => /^(PnL|fees|fee\/TVL|count)/.test(r));
+  assert.equal(twoCol.length, 4);
+  for (const r of twoCol) {
+    assert.equal(r[17], " ", `first value column not padded to 9 in "${r}"`);
+    assert.notEqual(r[18], " ", `second column does not start at offset 18 in "${r}"`);
+  }
+});
+
+test("the message says the figures predate the rebalance", () => {
+  // Without this the reader takes a pre-rebalance PnL for a post-rebalance one,
+  // which is exactly the confusion the timing was chosen to avoid.
+  assert.match(render(), /just before this rebalance/);
+});
+
+test("a pair name containing markup cannot break the message", () => {
+  // Pair names come from token metadata, which anyone can set. An unescaped "<"
+  // makes Telegram reject the whole alert rather than send a partial one.
+  const html = rebalanceAlertHtml({
+    pairName: '<b>PWN</b> & "co"',
+    reason: "out of range by 4 bins",
+    plan: plan(),
+    snapshot: snapshot(),
+    now: NOW,
+  });
+
+  assert.ok(!html.includes("<b>PWN</b>"), "the injected tag survived unescaped");
+  assert.match(html, /&lt;b&gt;PWN&lt;\/b&gt; &amp; "co"/);
+  // Only the tags this function emits itself may remain.
+  const tags = [...html.matchAll(/<\/?([a-z]+)>/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(tags)].sort(), ["b", "i", "pre"]);
+});
+
+test("a symbol containing markup is escaped too", () => {
+  const html = render({}, { swap: { fromSymbol: "<i>X", toSymbol: "SOL", valueUsd: 31.4, fromMint: "", toMint: "", xWithdrawBps: 0, yWithdrawBps: 0 } });
+  assert.ok(!html.includes("<i>X"), "an unescaped symbol reached the output");
+  assert.match(html, /&lt;i&gt;X→SOL/);
+});
+
+test("the swap row appears only on path B", () => {
+  assert.ok(!block(render()).some((r) => r.startsWith("swap")), "path A has no swap leg to report");
+
+  const b = block(
+    render({}, { path: "B", swap: { fromSymbol: "CATE", toSymbol: "SOL", valueUsd: 31.4, fromMint: "", toMint: "", xWithdrawBps: 0, yWithdrawBps: 0 } }),
+  );
+  assert.ok(b.some((r) => /^swap\s+~\$31\.40 CATE→SOL/.test(r)));
+});
+
+test("an unindexed position says so rather than printing a zero", () => {
+  // A zero here reads as "this position has made nothing", which is a different
+  // claim from "the indexer has not caught up".
+  const rows = block(render({ pnlUsd: null, pnlPctChange: null, lifetimeFeesUsd: null })).join("\n");
+
+  assert.match(rows, /PnL\s+not indexed yet/);
+  assert.ok(!/PnL\s+\$0\.00/.test(rows));
+  assert.ok(!rows.includes("lifetime"), "a missing lifetime figure is omitted, not printed as $0");
+});
+
+test("each figure degrades on its own", () => {
+  const rows = block(render({ feePerDayUsd: null, poolFeeTvlPct: null })).join("\n");
+
+  assert.match(rows, /fees\s+\$0\.9418$/m, "the claimed figure survives a missing rate");
+  assert.match(rows, /fee\/TVL\s+86\.64%$/m, "the position rate survives a missing pool rate");
+});
+
+test("the first rebalance says so instead of reporting a stale gap", () => {
+  const rows = block(render({ rebalanceNumber: 1, lastRebalanceAt: null })).join("\n");
+  assert.match(rows, /count\s+#1\s+first one/);
+});
+
+test("gaps longer than an hour are not reported in minutes", () => {
+  assert.match(block(render({ lastRebalanceAt: NOW - 200 * MIN })).join("\n"), /last 3h20m/);
+  assert.match(block(render({ lastRebalanceAt: NOW - 3000 * MIN })).join("\n"), /last 2d/);
+});
+
+// ---- the snapshot itself ----
+
+function snapDeps({ pnl = null, meta = null, wallet = "WALLET" } = {}) {
+  return {
+    client: { wallet: () => (wallet ? { publicKey: { toBase58: () => wallet } } : null) },
+    dataApi: {
+      positionPnlSafe: async () => (pnl ? [pnl] : []),
+      pool: async () => meta,
+    },
+    log: { debug() {}, info() {}, warn() {}, error() {} },
+  };
+}
+
+const MANAGED = { positionPk: "POS1", poolAddress: "POOL1", rebalanceCount: 7, lastRebalanceAt: NOW - 41 * MIN };
+
+test("the claimed-fees figure is the unclaimed balance the rebalance is about to collect", async () => {
+  // Read from the PLAN, not from the chain after the fact: after the rebalance
+  // this number is zero, because the rebalance claimed it.
+  const s = await snapshotBeforeRebalance(snapDeps(), MANAGED, plan({ unclaimedFeesUsd: 4.82 }));
+  assert.equal(s.claimedFeesUsd, 4.82);
+});
+
+test("the count is the rebalance about to run, not the one before it", async () => {
+  const s = await snapshotBeforeRebalance(snapDeps(), MANAGED, plan());
+  assert.equal(s.rebalanceNumber, 8, "a position with 7 completed is having its 8th");
+  assert.equal(s.lastRebalanceAt, NOW - 41 * MIN, "'last' must mean the PREVIOUS rebalance");
+});
+
+test("the daily fee figure is the indexer's rate applied to the planned value", async () => {
+  const s = await snapshotBeforeRebalance(
+    snapDeps({ pnl: { positionAddress: "POS1", feePerTvl24h: "10", pnlUsd: "1", pnlPctChange: "2", allTimeFees: { total: { usd: "3" } } } }),
+    MANAGED,
+    plan({ valueUsd: 200 }),
+  );
+
+  assert.equal(s.positionFeeTvlPct, 10);
+  assert.equal(s.feePerDayUsd, 20);
+});
+
+test("a Data API failure costs a line in the message, never the rebalance", async () => {
+  const deps = snapDeps();
+  deps.dataApi.positionPnlSafe = async () => {
+    throw new Error("502 bad gateway");
+  };
+  deps.dataApi.pool = async () => {
+    throw new Error("502 bad gateway");
+  };
+
+  const s = await snapshotBeforeRebalance(deps, MANAGED, plan());
+  assert.equal(s.pnlUsd, null);
+  assert.equal(s.claimedFeesUsd, 0.9418, "the plan's own figures still come through");
+  assert.equal(s.rebalanceNumber, 8);
+});
+
+test("no wallet yields a snapshot rather than a throw", async () => {
+  const s = await snapshotBeforeRebalance(snapDeps({ wallet: null }), MANAGED, plan());
+  assert.equal(s.pnlUsd, null);
+  assert.equal(s.rebalanceNumber, 8);
+});
+
+test("another position's PnL in the same pool is not picked up", async () => {
+  const s = await snapshotBeforeRebalance(
+    snapDeps({ pnl: { positionAddress: "SOMEONE_ELSE", pnlUsd: "999", feePerTvl24h: "50" } }),
+    MANAGED,
+    plan(),
+  );
+  assert.equal(s.pnlUsd, null);
+  assert.equal(s.positionFeeTvlPct, null);
+});

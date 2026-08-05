@@ -332,6 +332,30 @@ A position already entirely in the target token skips the swap and is simply an 
 `DRY_RUN` the exit is simulated and the swap leg is not, for the same reason Ape's open leg isn't:
 it would sell tokens the exit never actually released.
 
+## The rebalance alert
+
+A completed rebalance sends a Telegram message carrying the same figures the position card shows —
+PnL, fees claimed, the position's fee/TVL rate against the pool's, and the rebalance count — laid out
+as a monospace block so the columns line up on a phone.
+
+**Every figure is read before the rebalance runs, not after.** The alert goes out seconds after the
+transaction lands, which is inside the two-minute window where the indexer is known to be wrong; that
+is the same window the PnL sampler skips, and for the same reason. Reading PnL at that moment asks
+the Data API the one question it is guaranteed to answer badly. So the numbers describe the position
+going in, and the message says so. It also makes the fee line more useful, not less: the unclaimed
+balance immediately before is exactly what the rebalance went on to claim.
+
+Any figure the indexer cannot supply degrades on its own — `PnL not indexed yet` rather than a `$0.00`
+that would read as a claim about the position. A Data API outage costs lines in a message, never a
+rebalance.
+
+This is the only alert sent as Telegram HTML. `Notifier.notifyHtml` is a separate method rather than
+a `parse_mode` on all of them: every other alert interpolates pair names, wallet addresses and raw
+program error strings, and one stray `<` in a failure message would have Telegram reject the whole
+thing. Callers of `notifyHtml` escape their own interpolations with `escapeHtml`.
+
+Note that the manual **REBALANCE** button sends no alert at all — only the engine notifies.
+
 ## Stop loss and take profit
 
 A managed position can close itself when its PnL crosses a threshold. The **TRIGGERS** button on a
