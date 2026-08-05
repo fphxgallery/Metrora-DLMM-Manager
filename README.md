@@ -14,6 +14,8 @@ spending more on rebalancing than the position can earn.
   a position is beating a passive LP in the same pool
 - Open / add / claim / exit positions from the browser
 - Automatic rebalancing with cooldown, edge-buffer and cost guards
+- Per-position stop loss and take profit, confirmed over consecutive readings before they fire
+- A position's liquidity bin by bin, so you can see the shape your deposits actually made
 - Hot wallet created or imported in the UI (or from a CLI), with every token balance priced and
   empty token accounts closable to reclaim their rent
 - Cost-vs-fees charts over 24h / 7d / 30d / 90d / all time, so "does this pay?" has an answer
@@ -73,6 +75,20 @@ mid-instruction, so this runs in three transactions:
    wallet (`xWithdrawBps` / `yWithdrawBps` control how much),
 2. **swap** — Jupiter swaps it for the token the new range is short of,
 3. **deposit** — the proceeds go back into the (already re-centred) range.
+
+Sometimes four. Step 2 takes seconds, and the price can move in them — but a deposit places the base
+token only in bins **above the active bin as it stands when the deposit is built**. Any bin the price
+crossed in between keeps whatever step 1 left it and receives nothing from the proceeds, leaving a
+notch in the curve right next to the price. It is not lost money, just mis-shaped liquidity, and it
+persists until the next rebalance because trading only converts a bin, never refills it. Seen live:
+step 1 anchored on bin 11120, the deposit on 11122, and two bins ended up holding 0.25 JitoSOL where
+the curve called for 0.9 — about 4.5% of the position two bins from where it belonged.
+`maxActiveBinSlippage` does not help, since it decides whether to *reject* the transaction, so a
+tolerated drift is exactly the case that causes this. So when the position is no longer centred on
+the active bin, a re-centre is sent before the deposit and both deposits share one anchor. It is
+skipped when it would need a new bin array — that rent is unrecoverable and worth far more than the
+mis-shape — and a failure never blocks the deposit, because proceeds stranded in the wallet are worse
+than a notch. `RECENTRE_BEFORE_DEPOSIT=false` turns it off.
 
 If the swap fails *at simulation* on slippage — Jupiter error 6001, seen live on a route quoted at
 0bps price impact — it re-quotes immediately, up to three attempts. A fresh quote usually picks a
@@ -383,8 +399,9 @@ Note that the manual **REBALANCE** button sends no alert at all — only the eng
 ## Stop loss and take profit
 
 A managed position can close itself when its PnL crosses a threshold. The **TRIGGERS** button — inside
-a position card's liquidity panel, which opens when you click the card — arms it; the thresholds themselves default to the globals above and can be overridden
-per position. Firing runs the same zap out described here, or a plain `EXIT` if you would rather keep
+a position card's liquidity panel, which opens when you click the card — arms it; the thresholds
+themselves default to the globals above and can be overridden per position. The panel shows the live
+reading between the two thresholds, so you can see how close it is before arming anything. Firing runs the same zap out described here, or a plain `EXIT` if you would rather keep
 both tokens.
 
 **Nothing is armed by default, and arming is per position.** Setting `STOP_LOSS` in SETTINGS
