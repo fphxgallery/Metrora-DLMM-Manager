@@ -165,6 +165,20 @@ export interface Config {
   ratioToleranceBps: number;
   /** Max bins the active bin may move between simulate and land before the ix fails. */
   maxActiveBinSlippage: number;
+  /**
+   * Re-centre the position on the active bin before path B's deposit leg.
+   *
+   * Path B reshapes around the active bin, swaps, then deposits the proceeds —
+   * and the swap takes seconds, in which the active bin can move. The deposit
+   * can only place the base token ABOVE the active bin as it stands when the
+   * deposit is built, so any bin the price crossed in between is left with the
+   * reshape's share and nothing more: a notch in the curve, right next to the
+   * price. Re-centring first gives both curves the same anchor.
+   *
+   * A kill switch rather than a constant because it adds a transaction to a leg
+   * that moves real money, and turning it off must not need a redeploy.
+   */
+  recentreBeforeDeposit: boolean;
   /** Swap slippage for the ratio leg. 0 = let Jupiter pick (dynamic slippage). */
   swapSlippageBps: number;
   /**
@@ -257,6 +271,7 @@ export function loadConfig(): Config {
     // lopsided position before paying for one.
     ratioToleranceBps: num("RATIO_TOLERANCE_BPS", 3000),
     maxActiveBinSlippage: num("MAX_ACTIVE_BIN_SLIPPAGE", 15),
+    recentreBeforeDeposit: bool("RECENTRE_BEFORE_DEPOSIT", true),
     // NOT 0. Zero hands the decision to Jupiter's dynamic slippage, whose maxBps
     // is a CEILING rather than a floor — it classed SOL/USDC as low-volatility and
     // chose 15bps every time, killing roughly one swap in five on error 6001 while

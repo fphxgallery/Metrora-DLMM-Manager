@@ -131,6 +131,7 @@ would attach an absurd priority fee to every transaction).
 | `MAX_SWAP_PRICE_IMPACT_BPS` | `200` | Abort the swap leg above this quoted impact; the funds stay in the wallet and the entry retries later |
 | `MAX_SWAP_PRIORITY_LAMPORTS` | `200000` | Hard lamport ceiling on the priority fee Jupiter may attach to a swap |
 | `MAX_ACTIVE_BIN_SLIPPAGE` | `15` | Bins the active bin may move between simulation and landing |
+| `RECENTRE_BEFORE_DEPOSIT` | `true` | Re-centre the position on the active bin before path B's deposit leg, so the reshape and the deposit share one anchor. Skipped when it would pay bin-array rent, and never allowed to block the deposit |
 | `PRIORITY_FEE_MICROLAMPORTS` | `50000` | Per-CU price for transactions *we* build. Raise if transactions fail to confirm |
 | `COMPUTE_UNIT_LIMIT` | `600000` | CU limit for transactions *we* build, when the builder sets none. Capped at the runtime's 1,400,000 |
 | `SAMPLE_INTERVAL_MIN` | `15` | How often PnL is recorded for the METRICS charts |

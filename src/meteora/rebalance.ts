@@ -724,8 +724,14 @@ export async function runSwapLeg(
   throw lastErr;
 }
 
-/** Phase 3 of path B: single-sided deposit of the swap proceeds into the new range. */
-async function depositProceeds(
+/**
+ * Phase 3 of path B: single-sided deposit of the swap proceeds into the new range.
+ *
+ * Exported for `test/recentre-before-deposit.test.mjs` — this is the one choke
+ * point every deposit goes through (the normal path and both resume branches),
+ * so it is where the re-centre belongs and where it has to be proven.
+ */
+export async function depositProceeds(
   deps: RebalanceDeps,
   entry: JournalEntry,
   plan: RebalancePlan,
@@ -738,9 +744,18 @@ async function depositProceeds(
   }
 
   const wallet = client.requireWallet();
-  const pool = await client.getPool(plan.poolAddress, { fresh: true });
   const position = new PublicKey(plan.positionPk);
-  const { positionData } = await pool.getPosition(position);
+
+  const results: SendResult[] = [];
+  const centred = await recentreForDeposit(deps, plan, position);
+  results.push(...centred.results);
+  const positionData = centred.positionData;
+
+  // Fetched AFTER the re-centre, never before: that leg invalidates the cached
+  // pool, and addLiquidityByStrategy places liquidity relative to the active bin
+  // it reads off this object. Building from a pre-re-centre pool would put the
+  // deposit back on the stale anchor this function exists to remove.
+  const pool = await client.getPool(plan.poolAddress, { fresh: true });
   const toIsX = new PublicKey(plan.swap!.toMint).equals(pool.tokenX.publicKey);
 
   // Deposit over the position's CURRENT range — phase 1 already moved it to the
@@ -758,7 +773,102 @@ async function depositProceeds(
     },
   });
 
-  return [await sender.send(tx, [wallet], "rebalance (deposit leg)")];
+  results.push(await sender.send(tx, [wallet], "rebalance (deposit leg)"));
+  return results;
+}
+
+/**
+ * Puts the position back on the active bin before the deposit leg places its
+ * proceeds, so the two curves share one anchor.
+ *
+ * Path B reshapes the position around the active bin, swaps, and only then
+ * deposits — and the swap takes seconds, in which the price can move. The
+ * deposit can only place the base token in bins ABOVE the active bin as it
+ * stands when the deposit is BUILT, so every bin the price crossed in the
+ * meantime keeps the reshape's small share and receives nothing from the
+ * proceeds. The result is a notch in the curve immediately next to the price
+ * — observed on JitoSOL-ONyc as two bins holding 0.25 JitoSOL where the shape
+ * called for 0.9, about 4.5% of the position sitting two bins from where it
+ * belonged. Re-centring first makes both deposits anchor on the same bin, and
+ * the notch cannot form.
+ *
+ * Two things this deliberately will not do:
+ *
+ * - It will not pay bin-array rent. A re-centre that needs a new array costs
+ *   ~0.0714 SOL that is never recoverable, which is far more than the mis-shape
+ *   is worth, so it is skipped when the SDK asks for one.
+ * - It will not stop the deposit. Every failure here falls through to depositing
+ *   exactly as before, because proceeds sitting in the wallet is a far worse
+ *   outcome than a notch in the curve.
+ */
+async function recentreForDeposit(
+  deps: RebalanceDeps,
+  plan: RebalancePlan,
+  position: PublicKey,
+): Promise<{ results: SendResult[]; positionData: PositionData }> {
+  const { cfg, client, sender, log } = deps;
+  const pool = await client.getPool(plan.poolAddress, { fresh: true });
+  const { positionData } = await pool.getPosition(position);
+  const none = { results: [] as SendResult[], positionData };
+  if (!cfg.recentreBeforeDeposit) return none;
+
+  const activeBinId = pool.lbPair.activeId;
+  const [lo, hi] = balancedTargetRange(positionData, activeBinId);
+  if (lo === positionData.lowerBinId && hi === positionData.upperBinId) return none;
+
+  const drift = activeBinId - plan.activeBinId;
+  try {
+    const wallet = client.requireWallet();
+    const sim = await pool.simulateRebalancePositionWithBalancedStrategy(
+      position,
+      positionData,
+      StrategyType[plan.strategyType],
+      new BN(0), // no top-up: the proceeds go in on the deposit leg that follows
+      new BN(0),
+      new BN(0), // withdraw nothing — this only reshapes what is already there
+      new BN(0),
+    );
+    const { initBinArrayInstructions, rebalancePositionInstruction } = await pool.rebalancePosition(
+      sim,
+      new BN(cfg.maxActiveBinSlippage),
+    );
+
+    if (initBinArrayInstructions.length > 0) {
+      log.info(
+        { positionPk: plan.positionPk, activeBinId, drift, arrays: initBinArrayInstructions.length },
+        "skipping the pre-deposit re-centre — it would pay bin-array rent",
+      );
+      return none;
+    }
+
+    const result = await sender.send(
+      new Transaction().add(...client.ataIxs(pool), ...rebalancePositionInstruction),
+      [wallet],
+      "rebalance (re-centre before deposit)",
+    );
+    client.invalidate(plan.poolAddress);
+
+    const fresh = await client.getPool(plan.poolAddress, { fresh: true });
+    const { positionData: after } = await fresh.getPosition(position);
+    log.info(
+      {
+        positionPk: plan.positionPk,
+        drift,
+        from: [positionData.lowerBinId, positionData.upperBinId],
+        to: [after.lowerBinId, after.upperBinId],
+      },
+      "re-centred on the active bin before depositing",
+    );
+    return { results: [result], positionData: after };
+  } catch (e) {
+    // Never fatal. Depositing into a slightly off-centre range is what happened
+    // before this existed; failing here would strand the proceeds in the wallet.
+    log.warn(
+      { positionPk: plan.positionPk, drift, err: e instanceof Error ? e.message : String(e) },
+      "pre-deposit re-centre failed — depositing into the range as it stands",
+    );
+    return none;
+  }
 }
 
 // ----------------------------------------------------------------- resume ----
