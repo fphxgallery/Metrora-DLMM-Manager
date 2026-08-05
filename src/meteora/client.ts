@@ -40,6 +40,8 @@ export class MeteoraClient {
   private pools = new Map<string, CachedPool>();
   private keypair?: Keypair;
   private keypairMtimeMs = 0;
+  /** mint -> owning token program. Immutable on chain, so cached for the process. */
+  private tokenPrograms = new Map<string, PublicKey>();
 
   constructor(
     private readonly cfg: Config,
@@ -101,6 +103,40 @@ export class MeteoraClient {
   }
 
   /**
+   * Which token program owns a mint, read from the mint account itself.
+   *
+   * The ATA address depends on the token program: `getAssociatedTokenAddressSync`
+   * puts the program id in the derivation seeds, so a Token-2022 mint derived
+   * against the legacy program yields a DIFFERENT address — one that does not
+   * exist. Reading it does not error, it returns zero.
+   *
+   * That silence is what makes guessing dangerous, and it cost money. CATE is a
+   * Token-2022 mint; the buffer guard read a legacy-derived address, saw zero on
+   * every single check, and bought another $2 of CATE before every rebalance —
+   * 23 times, into the real Token-2022 account, where it piled up as ~$48 of idle
+   * balance while the guard kept reporting an empty buffer.
+   *
+   * Cached because a mint's owner cannot change. Falls back to the caller's hint,
+   * then to whatever `getAssociatedTokenAddressSync` defaults to, so an RPC
+   * hiccup degrades to the old behaviour rather than throwing on the signing path.
+   */
+  async tokenProgramOf(mint: PublicKey, hint?: PublicKey): Promise<PublicKey | undefined> {
+    if (hint) return hint;
+    const key = mint.toBase58();
+    const cached = this.tokenPrograms.get(key);
+    if (cached) return cached;
+    try {
+      const info = await this.connection.getAccountInfo(mint);
+      if (!info) return undefined;
+      this.tokenPrograms.set(key, info.owner);
+      return info.owner;
+    } catch (e) {
+      this.log.debug({ mint: key, err: e instanceof Error ? e.message : String(e) }, "token program lookup failed");
+      return undefined;
+    }
+  }
+
+  /**
    * Spendable wallet balance of one mint, in raw base units.
    *
    * Native SOL counts toward wrapped SOL: the SDK wraps on demand when a pool
@@ -113,7 +149,7 @@ export class MeteoraClient {
     if (!owner) return new BN(0);
 
     let raw = new BN(0);
-    const ata = getAssociatedTokenAddressSync(mint, owner, true, tokenProgramId);
+    const ata = getAssociatedTokenAddressSync(mint, owner, true, await this.tokenProgramOf(mint, tokenProgramId));
     try {
       const bal = await this.connection.getTokenAccountBalance(ata);
       raw = new BN(bal.value.amount);
@@ -144,7 +180,7 @@ export class MeteoraClient {
   async ataBalance(mint: PublicKey, tokenProgramId?: PublicKey): Promise<BN> {
     const owner = this.wallet()?.publicKey;
     if (!owner) return new BN(0);
-    const ata = getAssociatedTokenAddressSync(mint, owner, true, tokenProgramId);
+    const ata = getAssociatedTokenAddressSync(mint, owner, true, await this.tokenProgramOf(mint, tokenProgramId));
     try {
       const bal = await this.connection.getTokenAccountBalance(ata);
       return new BN(bal.value.amount);

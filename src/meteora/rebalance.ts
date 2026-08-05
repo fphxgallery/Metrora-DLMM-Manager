@@ -538,6 +538,13 @@ export async function ensureSideBuffer(
   // native SOL. With the fold, a wallet holding 0.8 SOL and an empty wSOL ATA
   // read as $60 against a $1 floor, so the guard returned "fine" and the
   // rebalance failed at simulation on the account it was meant to protect.
+  //
+  // No token program is passed because the Data API record does not carry one —
+  // `ataBalance` resolves it from the mint instead. That resolution is not
+  // optional: this was the ONE balance read in the app that did not know its
+  // token program, and against Token-2022 it derived an address that does not
+  // exist, read zero every time, and bought the buffer again before every
+  // rebalance. See MeteoraClient.tokenProgramOf.
   let balanceUsd: number;
   try {
     const raw = await client.ataBalance(new PublicKey(args.quoteMint));

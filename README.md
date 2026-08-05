@@ -202,6 +202,19 @@ Telegram and leaves the topping up to you.
 > `tokenBalance` reports — that one deliberately folds native SOL in, which is correct
 > for sizing a swap, since Jupiter wraps on demand, and wrong here.
 
+> The balance has to be read against the **right token program**, and getting that
+> wrong is silent. A mint's token program is one of the seeds its associated token
+> account is derived from, so a Token-2022 mint derived against the legacy program
+> yields a different address — one that does not exist. Reading a missing account is
+> not an error; it reads as zero. Live consequence, found 2026-08-05: CATE is
+> Token-2022, the guard read a legacy-derived address, saw `$0` on every check, and
+> bought another $2 of CATE before every rebalance — 23 times, into the real account,
+> where it accumulated as ~$48 of idle balance while the guard went on reporting an
+> empty buffer. `MeteoraClient.tokenProgramOf` now resolves the program from the mint
+> account and caches it. Every other balance read in the app already takes its program
+> from the pool object; this guard could not, because the Data API record does not
+> carry one.
+
 `MIN_SOL_BALANCE` is never spent to fund a top-up — that reserve is what keeps fees
 and rent payable, and draining it would trade one empty balance for another. If the
 spendable surplus cannot cover the whole top-up it is refused rather than
