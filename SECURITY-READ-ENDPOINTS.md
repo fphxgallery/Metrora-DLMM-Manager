@@ -16,6 +16,7 @@ at all — each of these returned a full `200`:
 | `/api/logs` | The entire application log |
 | `/api/metrics` | Rebalance count, costs, fee income, time in range |
 | `/api/positions` | Managed positions, pools, bin ranges |
+| `/api/positions/:pk/bins` | A position's liquidity bin by bin — amounts and prices |
 | `/api/history` | The full fee/PnL/cost time series |
 | `/api/journal` | The rebalance journal |
 

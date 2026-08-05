@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { requireAuth } from "../auth.js";
-import { listPositions } from "../meteora/positions.js";
+import { listPositions, positionBins } from "../meteora/positions.js";
 import { addLiquidity, claimFees, exitPosition, openPosition, type ActionDeps } from "../meteora/actions.js";
 import { executeRebalance, planRebalance, type RebalanceDeps } from "../meteora/rebalance.js";
 import { TxError } from "../tx/send.js";
@@ -127,6 +127,17 @@ export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, re
       const outcome = await executeRebalance(rebalanceDeps, plan);
       return { plan: outcome.plan, journalId: outcome.journalId, results: outcome.results, dryRun: outcome.dryRun };
     });
+  });
+
+  // A read, not an action: the card fetches it only while it is expanded, which
+  // is why it is not folded into /api/positions — that polls every 30 seconds
+  // for positions whose bins are usually not on screen.
+  app.get("/api/positions/:pk/bins", async (req, reply) => {
+    const { pk } = req.params as { pk: string };
+    const poolAddress = (req.query as { poolAddress?: string }).poolAddress ?? store.position(pk)?.poolAddress;
+    if (!poolAddress) return reply.code(400).send({ error: "poolAddress is required" });
+
+    return run(reply, () => positionBins({ client, dataApi }, { positionPk: pk, poolAddress }));
   });
 
   /** What the engine would decide right now, without doing anything. */

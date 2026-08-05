@@ -82,6 +82,11 @@ export function PositionsTab() {
   // engine's own `managed.edgeBufferBins ?? cfg.edgeBufferBins` fallback, so
   // the range bar's zones match what actually decides when a rebalance fires.
   const [defaultEdgeBufferBins, setDefaultEdgeBufferBins] = useState<number | null>(null);
+  // Which card has its liquidity panel open. Held HERE rather than in the card
+  // so that (a) the 30s poll cannot collapse it — the cards re-render, this does
+  // not — and (b) opening one closes the other without the cards knowing about
+  // each other.
+  const [openPk, setOpenPk] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -130,7 +135,14 @@ export function PositionsTab() {
       )}
 
       {data?.positions.map((p) => (
-        <PositionCard key={p.positionPk} p={p} onChanged={load} defaultEdgeBufferBins={defaultEdgeBufferBins} />
+        <PositionCard
+          key={p.positionPk}
+          p={p}
+          onChanged={load}
+          defaultEdgeBufferBins={defaultEdgeBufferBins}
+          open={openPk === p.positionPk}
+          onToggle={() => setOpenPk((cur) => (cur === p.positionPk ? null : p.positionPk))}
+        />
       ))}
     </>
   );
@@ -162,10 +174,14 @@ function PositionCard({
   p,
   onChanged,
   defaultEdgeBufferBins,
+  open,
+  onToggle,
 }: {
   p: PositionView;
   onChanged: () => void;
   defaultEdgeBufferBins: number | null;
+  open: boolean;
+  onToggle: () => void;
 }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -260,9 +276,20 @@ function PositionCard({
   const anyBusy = busy !== "";
 
   return (
-    <div className="panel">
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <div className="row">
+    <div
+      className={`panel card-x${open ? " open" : ""}`}
+      onClick={(e) => {
+        // Empty space only. Controls handle their own clicks, the sub-panels are
+        // workspaces rather than toggles, and a click that ends a text selection
+        // is someone copying an address, not asking for the chart.
+        const t = e.target as HTMLElement;
+        if (t.closest("button, input, select, a, .no-expand")) return;
+        if (window.getSelection()?.toString()) return;
+        onToggle();
+      }}
+    >
+      <div className="row">
+        <div className="row" style={{ flex: 1 }}>
           <b title={`position ${p.positionPk}\npool ${p.poolAddress}\nbins ${p.lowerBinId}…${p.upperBinId} · active ${p.activeBinId}`}>{p.pairName}</b>
           <span className="faint">bin step {p.binStep}</span>
           <span className={`pill ${p.inRange ? "good" : "bad"}`}>{p.inRange ? "IN RANGE" : "OUT OF RANGE"}</span>
@@ -277,10 +304,15 @@ function PositionCard({
           <span className="fact-sub">
             {fmtAmount(p.amountX)} {p.tokenX.symbol} · {fmtAmount(p.amountY)} {p.tokenY.symbol}
           </span>
+          <span className="chev" title={open ? "hide liquidity" : "show liquidity by bin"}>
+            ›
+          </span>
         </div>
-        <div className="row">
+      </div>
+
+      <div className="row" style={{ marginTop: 8 }}>
           <button
-            className={`btn${p.managed?.auto ? "" : " primary"}`}
+            className={`btn sm${p.managed?.auto ? "" : " primary"}`}
             disabled={anyBusy}
             onClick={() =>
               void act("auto", `/api/positions/${p.positionPk}/manage`, {
@@ -292,46 +324,47 @@ function PositionCard({
             {p.managed?.auto ? "DISABLE AUTO" : "ENABLE AUTO"}
           </button>
           <button
-            className="btn"
+            className="btn sm"
             disabled={anyBusy || p.feesUsd <= 0}
             onClick={() => void act("claim", `/api/positions/${p.positionPk}/claim`)}
           >
             {busy === "claim" ? "…" : "CLAIM FEES"}
           </button>
           <button
-            className="btn"
+            className="btn sm"
             disabled={anyBusy}
             onClick={() => void act("rebalance", `/api/positions/${p.positionPk}/rebalance`)}
           >
             {busy === "rebalance" ? "…" : "REBALANCE"}
           </button>
-          <button className="btn" disabled={anyBusy} onClick={() => void previewZap()}>
-            {busy === "zap" && !zapping ? "…" : "ZAP OUT"}
-          </button>
           {p.managed && (
-            <button className={`btn${showTriggers ? " primary" : ""}`} disabled={anyBusy} onClick={() => setShowTriggers(!showTriggers)}>
+            <button className={`btn sm${showTriggers ? " primary" : ""}`} disabled={anyBusy} onClick={() => setShowTriggers(!showTriggers)}>
               TRIGGERS
             </button>
           )}
+          {/* The destructive pair, pushed right so EXIT is never adjacent to REBALANCE. */}
+          <span style={{ flex: 1 }} />
+          <button className="btn sm" disabled={anyBusy} onClick={() => void previewZap()}>
+            {busy === "zap" && !zapping ? "…" : "ZAP OUT"}
+          </button>
           {confirmExit ? (
             <>
               <button
-                className="btn danger"
+                className="btn sm danger"
                 disabled={anyBusy}
                 onClick={() => void act("exit", `/api/positions/${p.positionPk}/exit`)}
               >
                 {busy === "exit" ? "…" : "CONFIRM EXIT"}
               </button>
-              <button className="btn" disabled={anyBusy} onClick={() => setConfirmExit(false)}>
+              <button className="btn sm" disabled={anyBusy} onClick={() => setConfirmExit(false)}>
                 CANCEL
               </button>
             </>
           ) : (
-            <button className="btn danger" disabled={anyBusy} onClick={() => setConfirmExit(true)}>
+            <button className="btn sm danger" disabled={anyBusy} onClick={() => setConfirmExit(true)}>
               EXIT
             </button>
           )}
-        </div>
       </div>
 
       {confirmExit && (
@@ -341,7 +374,7 @@ function PositionCard({
         </div>
       )}
       {zapping && zapPlan && (
-        <div className="msg" style={{ borderColor: "var(--warn)" }}>
+        <div className="msg no-expand" style={{ borderColor: "var(--warn)" }}>
           <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
             <span className="faint">RECEIVE</span>
             <div className="segmented">
@@ -440,6 +473,8 @@ function PositionCard({
         </pre>
       )}
 
+      {open && <LiquidityPanel p={p} />}
+
       <RangeBar p={p} defaultEdgeBufferBins={defaultEdgeBufferBins} />
 
       {/*
@@ -489,6 +524,147 @@ function PositionCard({
         <Fact k="Rebalances" v={p.managed ? fmtNum(p.managed.rebalanceCount) : "—"}>
           {p.managed?.lastRebalanceAt ? fmtAgo(p.managed.lastRebalanceAt) : "never"}
         </Fact>
+      </div>
+    </div>
+  );
+}
+
+interface BinView {
+  binId: number;
+  price: number;
+  x: number;
+  y: number;
+  valueInY: number;
+}
+
+interface PositionBins {
+  binStep: number;
+  activeBinId: number;
+  lowerBinId: number;
+  upperBinId: number;
+  tokenX: { symbol: string; decimals: number };
+  tokenY: { symbol: string; decimals: number };
+  bins: BinView[];
+}
+
+/**
+ * The position's liquidity, bin by bin.
+ *
+ * Bar height is each bin's worth in the QUOTE token, not its raw amount. Bins
+ * below the active one hold only quote and bins above hold only base, so raw
+ * amounts put the two halves on incomparable scales and draw a cliff at the
+ * active bin that does not exist. Valuing in quote is what makes the whole
+ * distribution read as one shape — and it is what makes a gap in that shape
+ * visible, which is the entire point of the panel: a two-bin notch left by a
+ * drifted deposit was diagnosed off exactly this chart.
+ *
+ * Fetched only while expanded, and re-fetched when the active bin moves or a
+ * rebalance lands — the two things that actually change the picture.
+ */
+function LiquidityPanel({ p }: { p: PositionView }) {
+  const [data, setData] = useState<PositionBins | null>(null);
+  const [error, setError] = useState("");
+
+  const rebalances = p.managed?.rebalanceCount ?? 0;
+  useEffect(() => {
+    let live = true;
+    setError("");
+    api
+      .get<PositionBins>(`/api/positions/${p.positionPk}/bins?poolAddress=${p.poolAddress}`)
+      .then((d) => live && setData(d))
+      .catch((e) => live && setError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      // The card can be collapsed, or the poll can move the active bin, before
+      // this lands. Without the guard a stale response overwrites a newer one.
+      live = false;
+    };
+  }, [p.positionPk, p.poolAddress, p.activeBinId, rebalances]);
+
+  if (error) return <div className="msg err no-expand">liquidity: {error}</div>;
+  if (!data) return <div className="lp no-expand faint">reading bins…</div>;
+
+  const max = Math.max(...data.bins.map((b) => b.valueInY), 0);
+  const withBase = data.bins.filter((b) => b.x > 0).length;
+  const withQuote = data.bins.filter((b) => b.y > 0).length;
+  const sym = { x: data.tokenX.symbol, y: data.tokenY.symbol };
+  // Totals and the active price come from the BINS, not from the card's own
+  // position record. They are two different fetches taken at two different
+  // moments, and a panel that labels one fetch's chart with another's numbers is
+  // quietly lying — the totals here are exactly what the bars above add up to.
+  const totalX = data.bins.reduce((t, b) => t + b.x, 0);
+  const totalY = data.bins.reduce((t, b) => t + b.y, 0);
+  const activePrice = data.bins.find((b) => b.binId === data.activeBinId)?.price ?? null;
+
+  return (
+    <div className="lp no-expand">
+      <div className="lp-head">
+        <span className="faint">Liquidity by bin</span>
+        <span className="lp-tok">
+          <i className="sw" style={{ background: "#3ec9d6" }} /> {sym.y} <span className="fact-sub">below price</span>
+        </span>
+        <span className="lp-tok">
+          <i className="sw" style={{ background: "#8b7bf0" }} /> {sym.x} <span className="fact-sub">above price</span>
+        </span>
+        <span className="lp-tok">
+          <i className="sw" style={{ background: "#e8f3ff" }} /> active bin
+        </span>
+        <span style={{ flex: 1 }} />
+        <span className="fact-sub">
+          {data.bins.length} bins · {data.lowerBinId}…{data.upperBinId}
+        </span>
+      </div>
+
+      <div className="lp-chart">
+        {data.bins.map((b) => {
+          const cls =
+            b.valueInY <= 0 ? "empty" : b.binId === data.activeBinId ? "act" : b.binId < data.activeBinId ? "y" : "x";
+          return (
+            <div
+              key={b.binId}
+              className={`lp-bin ${cls}`}
+              style={{ height: `${max > 0 ? Math.max(2, (b.valueInY / max) * 100) : 2}%` }}
+              title={
+                `bin ${b.binId} · ${fmtPrice(b.price)}\n` +
+                `${fmtAmount(b.x)} ${sym.x} · ${fmtAmount(b.y)} ${sym.y}\n` +
+                `${fmtAmount(b.valueInY)} ${sym.y} of value`
+              }
+            />
+          );
+        })}
+      </div>
+      <div className="lp-axis">
+        <span>{fmtPrice(data.bins[0]?.price ?? 0)}</span>
+        {/* Null when the price has left the position's range entirely — there is
+            no active bin among these bins to read a price off. */}
+        <span>{activePrice == null ? "active bin outside range" : `${fmtPrice(activePrice)} · active`}</span>
+        <span>{fmtPrice(data.bins[data.bins.length - 1]?.price ?? 0)}</span>
+      </div>
+
+      <div className="lp-grid">
+        <div>
+          <span>{sym.x}</span>
+          <b>{fmtAmount(totalX)}</b>
+        </div>
+        <div>
+          <span>{sym.y}</span>
+          <b>{fmtAmount(totalY)}</b>
+        </div>
+        <div>
+          <span>bins holding {sym.x}</span>
+          <b>{withBase}</b>
+        </div>
+        <div>
+          <span>bins holding {sym.y}</span>
+          <b>{withQuote}</b>
+        </div>
+        <div>
+          <span>unclaimed fees</span>
+          <b>{fmtUsd(p.feesUsd)}</b>
+        </div>
+        <div>
+          <span>value</span>
+          <b>{fmtUsd(p.valueUsd)}</b>
+        </div>
       </div>
     </div>
   );
@@ -560,7 +736,7 @@ function TriggersPanel({
   const geo = gaugeGeometry(reading, triggers.stopLoss, triggers.takeProfit);
 
   return (
-    <div className="msg" style={{ borderColor: armed ? "var(--warn)" : "var(--border)" }}>
+    <div className="msg no-expand" style={{ borderColor: armed ? "var(--warn)" : "var(--border)" }}>
       <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <span className="faint">TRIGGERS</span>
         <div className="segmented">

@@ -622,8 +622,8 @@ interrupted rebalance is recovered, and the row is tagged `UNWRAPS TO SOL` rathe
 - The dashboard is gated behind a full-page login; nothing renders until the token verifies. **That
   gate decides what the React app renders, not what the server answers.** The token protects every
   *mutating* endpoint; the read endpoints are open. Anything that can reach the port can `GET`
-  `/api/settings`, `/api/wallet/tokens`, `/api/logs`, `/api/metrics`, `/api/positions` and
-  `/api/journal` without a token, disclosing the wallet address and balances, the full config
+  `/api/settings`, `/api/wallet/tokens`, `/api/logs`, `/api/metrics`, `/api/positions`,
+  `/api/positions/:pk/bins` and `/api/journal` without a token, disclosing the wallet address and balances, the full config
   including the Telegram chat id, and the application log. Treat the published port as the real
   boundary and do not expose it beyond a network you trust — see `SECURITY-READ-ENDPOINTS.md`.
 - `HOST` defaults to `127.0.0.1`. `docker-compose.yml` sets `0.0.0.0` *inside the container* — the

@@ -1,4 +1,5 @@
 import BN from "bn.js";
+import { PublicKey } from "@solana/web3.js";
 import type { Config } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { ManagedPosition, Store } from "../state.js";
@@ -352,5 +353,76 @@ function buildFeeRate(args: {
   return {
     positionPctPer24h,
     poolPctPer24h: typeof poolRatio === "number" && Number.isFinite(poolRatio) ? poolRatio : null,
+  };
+}
+
+/** One bin of a position's liquidity, priced so both sides land on one scale. */
+export interface PositionBinView {
+  binId: number;
+  /** UI price of token X in token Y at this bin. */
+  price: number;
+  /** Token amounts held in this bin, in UI units. */
+  x: number;
+  y: number;
+  /**
+   * The bin's worth expressed in token Y (`x * price + y`).
+   *
+   * Bins below the active bin hold only Y and bins above hold only X, so raw
+   * amounts put the two halves on incomparable scales and the chart would show
+   * a cliff at the active bin that is not there. Valuing in Y is what makes the
+   * distribution readable as one shape.
+   */
+  valueInY: number;
+}
+
+export interface PositionBins {
+  positionPk: string;
+  poolAddress: string;
+  binStep: number;
+  activeBinId: number;
+  lowerBinId: number;
+  upperBinId: number;
+  tokenX: { symbol: string; decimals: number };
+  tokenY: { symbol: string; decimals: number };
+  bins: PositionBinView[];
+}
+
+/**
+ * A position's liquidity bin by bin.
+ *
+ * Deliberately its own endpoint rather than part of `listPositions`: it is one
+ * account read per position and the list polls every 30 seconds for two
+ * positions that mostly do not have their bins on screen. The card fetches this
+ * only while it is expanded.
+ */
+export async function positionBins(
+  deps: { client: MeteoraClient; dataApi: DataApi },
+  params: { positionPk: string; poolAddress: string },
+): Promise<PositionBins> {
+  const pool = await deps.client.getPool(params.poolAddress, { fresh: true });
+  // Symbols are cosmetic here — they label the chart. The Data API being down
+  // must not cost you the shape, which is the part that matters.
+  const meta = await deps.dataApi.pool(params.poolAddress).catch(() => null);
+  const { positionData } = await pool.getPosition(new PublicKey(params.positionPk));
+  const decimalsX = pool.tokenX.mint.decimals;
+  const decimalsY = pool.tokenY.mint.decimals;
+
+  const bins = positionData.positionBinData.map((b) => {
+    const price = priceOfBin(pool, b.binId);
+    const x = toUi(b.positionXAmount, decimalsX);
+    const y = toUi(b.positionYAmount, decimalsY);
+    return { binId: b.binId, price, x, y, valueInY: x * price + y };
+  });
+
+  return {
+    positionPk: params.positionPk,
+    poolAddress: params.poolAddress,
+    binStep: pool.lbPair.binStep,
+    activeBinId: pool.lbPair.activeId,
+    lowerBinId: positionData.lowerBinId,
+    upperBinId: positionData.upperBinId,
+    tokenX: { symbol: meta?.token_x.symbol ?? "X", decimals: decimalsX },
+    tokenY: { symbol: meta?.token_y.symbol ?? "Y", decimals: decimalsY },
+    bins,
   };
 }

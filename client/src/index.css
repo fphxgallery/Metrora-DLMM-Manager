@@ -195,6 +195,20 @@ button.btn {
   cursor: pointer;
 }
 
+/*
+  The position card's own action row. Six controls at the full size were ~35px
+  tall and out-shouted the pair name they belong to; this is the same six at
+  ~22px. Only the card uses it — forms still want a full-size button, because
+  there the button IS the point of the panel.
+*/
+button.btn.sm {
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  padding: 4px 9px;
+  border-radius: 3px;
+  color: var(--text-dim);
+}
+
 button.btn:hover:not(:disabled) {
   border-color: var(--accent-dim);
   color: var(--accent);
@@ -798,6 +812,130 @@ th.sortable.active {
 
 .segmented button:hover:not(.active) {
   color: var(--text);
+}
+
+/* ---------- position card: expand ---------- */
+
+/*
+  The whole card is the click target for its liquidity panel, so the cursor has
+  to say so everywhere the click actually lands — and NOT over the controls,
+  where a pointer would promise the wrong action.
+*/
+.panel.card-x {
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.panel.card-x:hover {
+  border-color: var(--border-hot);
+}
+
+.panel.card-x button,
+.panel.card-x input,
+.panel.card-x select,
+.panel.card-x label,
+.panel.card-x .no-expand {
+  cursor: auto;
+}
+
+.panel.card-x button {
+  cursor: pointer;
+}
+
+.chev {
+  color: var(--text-faint);
+  font-size: 12px;
+  display: inline-block;
+  transition: transform 0.15s;
+}
+
+.panel.card-x.open .chev {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+/* ---------- liquidity by bin ---------- */
+
+.lp {
+  border: 1px solid var(--border-hot);
+  border-radius: 5px;
+  background: var(--panel-2);
+  padding: 12px;
+  margin: 10px 0;
+}
+
+.lp-head {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.lp-tok {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.sw {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.lp-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 120px;
+  overflow-x: auto;
+}
+
+.lp-bin {
+  flex: 1 0 3px;
+  min-width: 2px;
+  border-radius: 1px 1px 0 0;
+}
+
+/* Bins below the active one hold the quote token, above it the base token. */
+.lp-bin.y { background: linear-gradient(180deg, #3ec9d6, #1c7f94); }
+.lp-bin.x { background: linear-gradient(180deg, #8b7bf0, #5b4bc4); }
+.lp-bin.act { background: linear-gradient(180deg, #e8f3ff, #9fb6cc); }
+/* An empty bin still needs a hit target for its tooltip. */
+.lp-bin.empty { background: var(--border); }
+
+.lp-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-top: 5px;
+}
+
+.lp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 6px 18px;
+  margin-top: 12px;
+  font-size: 11px;
+}
+
+.lp-grid > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px dotted var(--border);
+  padding-bottom: 3px;
+}
+
+.lp-grid > div > span:first-child {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 10px;
 }
 
 /* ---------- trigger gauge ---------- */
