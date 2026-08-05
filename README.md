@@ -319,6 +319,10 @@ recover from by hand.
 
 ## Zap out — close a position and hold one token
 
+Clicking a position card opens its liquidity panel: the position's own controls, and beneath them its
+liquidity bin by bin, each bar valued in the quote token so both sides of the active bin share one
+scale. The collapsed card is information only.
+
 `ZAP OUT` on a position does what `EXIT` does — removes all liquidity, claims fees, closes the
 account and reclaims its rent — and then swaps the side you did not want, so you end up holding a
 single token.
@@ -378,8 +382,8 @@ Note that the manual **REBALANCE** button sends no alert at all — only the eng
 
 ## Stop loss and take profit
 
-A managed position can close itself when its PnL crosses a threshold. The **TRIGGERS** button on a
-position card arms it; the thresholds themselves default to the globals above and can be overridden
+A managed position can close itself when its PnL crosses a threshold. The **TRIGGERS** button — inside
+a position card's liquidity panel, which opens when you click the card — arms it; the thresholds themselves default to the globals above and can be overridden
 per position. Firing runs the same zap out described here, or a plain `EXIT` if you would rather keep
 both tokens.
 

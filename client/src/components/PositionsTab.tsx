@@ -310,7 +310,17 @@ function PositionCard({
         </div>
       </div>
 
-      <div className="row" style={{ marginTop: 8 }}>
+      {/*
+        Everything you can DO to a position now lives behind the expand, with the
+        chart. Six controls per position permanently on screen made a list of
+        positions read as a control panel. Controls come FIRST inside the panel:
+        you decide whether to act from the collapsed card's facts, and open it in
+        order to act, so the chart is context on the way past rather than
+        something to scroll over.
+      */}
+      {open && (
+        <div className="lp no-expand">
+          <div className="row">
           <button
             className={`btn sm${p.managed?.auto ? "" : " primary"}`}
             disabled={anyBusy}
@@ -365,7 +375,7 @@ function PositionCard({
               EXIT
             </button>
           )}
-      </div>
+          </div>
 
       {confirmExit && (
         <div className="msg" style={{ borderColor: "var(--warn)" }}>
@@ -473,7 +483,10 @@ function PositionCard({
         </pre>
       )}
 
-      {open && <LiquidityPanel p={p} />}
+          <hr className="lp-rule" />
+          <LiquidityChart p={p} />
+        </div>
+      )}
 
       <RangeBar p={p} defaultEdgeBufferBins={defaultEdgeBufferBins} />
 
@@ -561,7 +574,7 @@ interface PositionBins {
  * Fetched only while expanded, and re-fetched when the active bin moves or a
  * rebalance lands — the two things that actually change the picture.
  */
-function LiquidityPanel({ p }: { p: PositionView }) {
+function LiquidityChart({ p }: { p: PositionView }) {
   const [data, setData] = useState<PositionBins | null>(null);
   const [error, setError] = useState("");
 
@@ -580,8 +593,8 @@ function LiquidityPanel({ p }: { p: PositionView }) {
     };
   }, [p.positionPk, p.poolAddress, p.activeBinId, rebalances]);
 
-  if (error) return <div className="msg err no-expand">liquidity: {error}</div>;
-  if (!data) return <div className="lp no-expand faint">reading bins…</div>;
+  if (error) return <div className="msg err">liquidity: {error}</div>;
+  if (!data) return <div className="faint">reading bins…</div>;
 
   const max = Math.max(...data.bins.map((b) => b.valueInY), 0);
   const withBase = data.bins.filter((b) => b.x > 0).length;
@@ -596,7 +609,7 @@ function LiquidityPanel({ p }: { p: PositionView }) {
   const activePrice = data.bins.find((b) => b.binId === data.activeBinId)?.price ?? null;
 
   return (
-    <div className="lp no-expand">
+    <>
       <div className="lp-head">
         <span className="faint">Liquidity by bin</span>
         <span className="lp-tok">
@@ -666,7 +679,7 @@ function LiquidityPanel({ p }: { p: PositionView }) {
           <b>{fmtUsd(p.valueUsd)}</b>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 

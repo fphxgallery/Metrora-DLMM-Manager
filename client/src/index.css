@@ -864,6 +864,13 @@ th.sortable.active {
   margin: 10px 0;
 }
 
+/* Between the controls and the chart they act on. */
+hr.lp-rule {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 11px 0;
+}
+
 .lp-head {
   display: flex;
   gap: 14px;
