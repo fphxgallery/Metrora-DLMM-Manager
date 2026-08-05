@@ -100,16 +100,14 @@ export async function snapshotBeforeRebalance(
  */
 export function rebalanceAlertHtml(args: {
   pairName: string;
-  reason: string;
   plan: RebalancePlan;
   snapshot: RebalanceSnapshot;
   now?: number;
 }): string {
-  const { pairName, reason, plan, snapshot } = args;
+  const { pairName, plan, snapshot } = args;
   const now = args.now ?? Date.now();
   const rows: string[] = [];
 
-  rows.push(row("range", `${plan.currentRange[0]}…${plan.currentRange[1]} → ${plan.targetRange[0]}…${plan.targetRange[1]}`));
   if (plan.swap) {
     rows.push(row("swap", `~$${plan.swap.valueUsd.toFixed(2)} ${plan.swap.fromSymbol}→${plan.swap.toSymbol}`));
   }
@@ -147,11 +145,10 @@ export function rebalanceAlertHtml(args: {
     rows.push(row("lifetime", `$${snapshot.lifetimeFeesUsd.toFixed(2)} fees`));
   }
 
-  return (
-    `🔄 <b>Rebalanced ${escapeHtml(pairName)}</b>\n${escapeHtml(reason)}\n` +
-    `<pre>${escapeHtml(rows.join("\n"))}</pre>\n` +
-    `<i>figures are from just before this rebalance — the indexer needs ~2 min to catch up</i>`
-  );
+  // <code>, deliberately not <pre>. Both render monospace, but Telegram treats a
+  // <pre> as a code BLOCK and draws its own chrome around it — a bordered panel
+  // with a "copy" header. <code> is the same font without the furniture.
+  return `🔄 <b>Rebalanced ${escapeHtml(pairName)}</b>\n<code>${escapeHtml(rows.join("\n"))}</code>`;
 }
 
 const LABEL_W = 9;

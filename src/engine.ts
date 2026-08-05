@@ -176,6 +176,14 @@ export class Engine {
     }
 
     this.busy.add(managed.positionPk);
+    // The reason used to travel in the Telegram alert and no longer does, so this
+    // is now the only record of WHY a rebalance ran — pre-emptive at the edge, or
+    // already out of range. Worth a line: the cost of one is nothing next to
+    // reconstructing it from bin ids afterwards.
+    this.ctx.log.info(
+      { positionPk: managed.positionPk, reason: decision.reason, ...decision.detail },
+      "rebalancing",
+    );
 
     /**
      * Read BEFORE the rebalance, not after.
@@ -202,7 +210,6 @@ export class Engine {
         this.notifier.notifyHtml(
           rebalanceAlertHtml({
             pairName: managed.pairName ?? decision.plan.poolAddress.slice(0, 8),
-            reason: decision.reason,
             plan: decision.plan,
             snapshot,
           }),

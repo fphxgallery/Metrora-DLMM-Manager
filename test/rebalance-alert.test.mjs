@@ -48,16 +48,20 @@ function snapshot(over = {}) {
 function render(over = {}, planOver = {}) {
   return rebalanceAlertHtml({
     pairName: "CATE-SOL",
-    reason: "active bin 3 from the edge",
     plan: plan(planOver),
     snapshot: snapshot(over),
     now: NOW,
   });
 }
 
-/** The text inside the <pre> block, which is where every figure lives. */
+/**
+ * The text inside the <code> span, which is where every figure lives.
+ *
+ * <code> rather than <pre> on purpose: Telegram renders a <pre> as a code BLOCK,
+ * with a bordered panel and a "copy" header drawn around it.
+ */
 function block(html) {
-  return html.match(/<pre>([\s\S]*?)<\/pre>/)[1].split("\n");
+  return html.match(/<code>([\s\S]*?)<\/code>/)[1].split("\n");
 }
 
 test("every figure the position card shows is in the alert", () => {
@@ -73,7 +77,7 @@ test("every figure the position card shows is in the alert", () => {
 test("the columns actually line up", () => {
   // The whole reason this variant needs parse_mode HTML is the monospace block.
   // If the values do not start at the same offset the block buys nothing.
-  const rows = block(render()).filter((r) => /^(range|cost|PnL|fees|fee\/TVL|count|lifetime)/.test(r));
+  const rows = block(render()).filter((r) => /^(swap|cost|PnL|fees|fee\/TVL|count|lifetime)/.test(r));
 
   for (const r of rows) {
     assert.equal(r[8], " ", `label column not padded to 9 in "${r}"`);
@@ -90,10 +94,18 @@ test("the columns actually line up", () => {
   }
 });
 
-test("the message says the figures predate the rebalance", () => {
-  // Without this the reader takes a pre-rebalance PnL for a post-rebalance one,
-  // which is exactly the confusion the timing was chosen to avoid.
-  assert.match(render(), /just before this rebalance/);
+test("the block is not a <pre>, so Telegram draws no copy bar around it", () => {
+  // A <pre> renders as a code block with its own panel and "copy" header. The
+  // alert wants the monospace font and none of the furniture.
+  const html = render();
+  assert.ok(!html.includes("<pre>"), "a <pre> block brings back the copy bar");
+  assert.match(html, /<code>[\s\S]+<\/code>/);
+});
+
+test("the range row and the reason line are gone", () => {
+  const html = render();
+  assert.ok(!block(html).some((r) => r.startsWith("range")), "the range row was removed");
+  assert.ok(!html.includes("from the edge"), "the reason line was removed");
 });
 
 test("a pair name containing markup cannot break the message", () => {
@@ -101,7 +113,6 @@ test("a pair name containing markup cannot break the message", () => {
   // makes Telegram reject the whole alert rather than send a partial one.
   const html = rebalanceAlertHtml({
     pairName: '<b>PWN</b> & "co"',
-    reason: "out of range by 4 bins",
     plan: plan(),
     snapshot: snapshot(),
     now: NOW,
@@ -111,7 +122,7 @@ test("a pair name containing markup cannot break the message", () => {
   assert.match(html, /&lt;b&gt;PWN&lt;\/b&gt; &amp; "co"/);
   // Only the tags this function emits itself may remain.
   const tags = [...html.matchAll(/<\/?([a-z]+)>/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(tags)].sort(), ["b", "i", "pre"]);
+  assert.deepEqual([...new Set(tags)].sort(), ["b", "code"]);
 });
 
 test("a symbol containing markup is escaped too", () => {

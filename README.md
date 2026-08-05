@@ -336,7 +336,13 @@ it would sell tokens the exit never actually released.
 
 A completed rebalance sends a Telegram message carrying the same figures the position card shows —
 PnL, fees claimed, the position's fee/TVL rate against the pool's, and the rebalance count — laid out
-as a monospace block so the columns line up on a phone.
+in monospace so the columns line up on a phone.
+
+The block is a `<code>` span rather than `<pre>`. Both render monospace, but Telegram treats a `<pre>`
+as a code *block* and draws its own chrome around it: a bordered panel with a "copy" header.
+
+Why the rebalance ran — pre-emptive at the edge, or already out of range — is not in the alert. It is
+logged at info level as `rebalancing`, which is the only record of it.
 
 **Every figure is read before the rebalance runs, not after.** The alert goes out seconds after the
 transaction lands, which is inside the two-minute window where the indexer is known to be wrong; that
