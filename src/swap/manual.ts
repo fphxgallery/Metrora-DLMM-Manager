@@ -8,7 +8,7 @@ import type { Store } from "../state.js";
 import { toRaw, toUi } from "../meteora/pricing.js";
 import type { SendResult, TxSender } from "../tx/send.js";
 import { fetchTokenMeta, readTokenAccounts } from "../wallet/tokens.js";
-import type { JupiterSwap } from "./jupiter.js";
+import type { JupiterSwap, SwapPlan } from "./jupiter.js";
 
 /**
  * Manual wallet swaps.
@@ -97,6 +97,23 @@ async function managedMints(deps: SwapDeps): Promise<Map<string, string>> {
   return out;
 }
 
+/**
+ * The same ceiling the rebalance swap answers to. Reused deliberately: it is a
+ * statement about whether a route is worth taking, and that does not change
+ * because a human pressed the button rather than the engine.
+ *
+ * A function rather than an inline check because it has to run TWICE — once on
+ * the quote the preview shows, and again on the quote that is actually signed,
+ * which is a different one.
+ */
+function assertRouteAcceptable(cfg: Config, priceImpactBps: number, inSymbol: string, outSymbol: string): void {
+  if (priceImpactBps <= cfg.maxSwapPriceImpactBps) return;
+  throw new Error(
+    `swap price impact ${priceImpactBps}bps exceeds MAX_SWAP_PRICE_IMPACT_BPS (${cfg.maxSwapPriceImpactBps}bps)` +
+      ` — refusing the ${inSymbol}->${outSymbol} route. Nothing was sent.`,
+  );
+}
+
 function mintOf(value: string, label: string): PublicKey {
   try {
     return new PublicKey(value);
@@ -171,15 +188,7 @@ export async function planSwap(deps: SwapDeps, params: SwapParams): Promise<Swap
     amount: amountRaw,
   });
 
-  // The same ceiling the rebalance swap answers to. Reused deliberately: it is
-  // a statement about whether a route is worth taking, and that does not change
-  // because a human pressed the button rather than the engine.
-  if (quote.priceImpactBps > cfg.maxSwapPriceImpactBps) {
-    throw new Error(
-      `swap price impact ${quote.priceImpactBps}bps exceeds MAX_SWAP_PRICE_IMPACT_BPS (${cfg.maxSwapPriceImpactBps}bps)` +
-        ` — refusing the ${inSymbol}->${outSymbol} route. Nothing was sent.`,
-    );
-  }
+  assertRouteAcceptable(cfg, quote.priceImpactBps, inSymbol, outSymbol);
 
   /**
    * The wallet's own account first, then Jupiter's index. Buying a token the
@@ -245,19 +254,37 @@ export async function planSwap(deps: SwapDeps, params: SwapParams): Promise<Swap
  * nothing is worse than no button.
  */
 export async function executeSwap(deps: SwapDeps, params: SwapParams): Promise<SwapResult> {
-  const { client, sender, swapper, log } = deps;
+  const { cfg, client, sender, swapper, log } = deps;
   const wallet = client.requireWallet();
   await client.assertSolFunded();
 
-  const plan = await planSwap(deps, params);
-  const outputMint = new PublicKey(plan.outputMint);
+  const preview = await planSwap(deps, params);
+  const outputMint = new PublicKey(preview.outputMint);
   const before = await client.tokenBalance(outputMint);
 
   const quote = await swapper.quote({
-    inputMint: plan.inputMint,
-    outputMint: plan.outputMint,
-    amount: toRaw(plan.amountIn, plan.inDecimals),
+    inputMint: preview.inputMint,
+    outputMint: preview.outputMint,
+    amount: toRaw(preview.amountIn, preview.inDecimals),
   });
+
+  /**
+   * The impact ceiling again, on THIS quote.
+   *
+   * `planSwap` checked the quote it took, and then this one replaced it — a
+   * fresh quote is the whole point of re-quoting at confirm. Checking only the
+   * discarded one left the guard measuring a route that was never signed, so a
+   * pool drained in the second between the two would be swapped into at any
+   * impact at all: the simulation passes (a terrible swap is still a valid one)
+   * and `otherAmountThreshold` comes from this same quote, so slippage
+   * tolerance does not bind either.
+   */
+  assertRouteAcceptable(cfg, quote.priceImpactBps, preview.inSymbol, preview.outSymbol);
+
+  // What the caller is told must describe the transaction that ran, not the
+  // preview it replaced.
+  const plan = replan(preview, quote);
+
   const label = `manual swap ${plan.inSymbol}->${plan.outSymbol}`;
   const send = await sender.sendVersioned(await swapper.buildTransaction(quote, wallet), label, { force: true });
 
@@ -269,4 +296,33 @@ export async function executeSwap(deps: SwapDeps, params: SwapParams): Promise<S
   deps.notify?.(`🔄 Swapped ${plan.amountIn} ${plan.inSymbol} → ${received} ${plan.outSymbol}`);
 
   return { plan, send, received };
+}
+
+/**
+ * Re-states a plan against the quote that was actually signed.
+ *
+ * Only the quote-derived fields move. The USD figures are rescaled from the
+ * preview's own implied unit price rather than re-fetched — `outUsd` is
+ * `quotedOut * price`, so the price divides straight back out, and a second
+ * price lookup here would be a second thing that can fail between the quote and
+ * the send.
+ */
+function replan(preview: SwapPlanView, quote: SwapPlan): SwapPlanView {
+  const quotedOut = toUi(quote.outAmount, preview.outDecimals);
+  const unitUsd = preview.outUsd != null && preview.quotedOut > 0 ? preview.outUsd / preview.quotedOut : null;
+  const outUsd = unitUsd == null ? null : quotedOut * unitUsd;
+  return {
+    ...preview,
+    quotedOut,
+    minOut: toUi(new BN(quote.quote.otherAmountThreshold), preview.outDecimals),
+    rate: preview.amountIn > 0 ? quotedOut / preview.amountIn : 0,
+    priceImpactBps: quote.priceImpactBps,
+    slippageBps: quote.quote.slippageBps,
+    route: quote.route,
+    outUsd,
+    valueDeltaPct:
+      preview.inUsd != null && outUsd != null && preview.inUsd > 0
+        ? ((outUsd - preview.inUsd) / preview.inUsd) * 100
+        : null,
+  };
 }
