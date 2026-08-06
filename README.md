@@ -18,6 +18,8 @@ spending more on rebalancing than the position can earn.
 - A position's liquidity bin by bin, so you can see the shape your deposits actually made
 - Hot wallet created or imported in the UI (or from a CLI), with every token balance priced and
   empty token accounts closable to reclaim their rent
+- Manual swaps between any two tokens the wallet can route, on the same Jupiter leg the rebalancer
+  uses, so consolidating dust does not mean leaving the app
 - Cost-vs-fees charts over 24h / 7d / 30d / 90d / all time, so "does this pay?" has an answer
 - Crash-safe: a rebalance interrupted mid-sequence is resolved in-run, not at the next restart
 
@@ -365,6 +367,56 @@ along with everything else. The rent should come back as SOL.
 A position already entirely in the target token skips the swap and is simply an exit. Under
 `DRY_RUN` the exit is simulated and the swap leg is not, for the same reason Ape's open leg isn't:
 it would sell tokens the exit never actually released.
+
+## Swap — the wallet, by hand
+
+The `SWAP` tab is one balance in, one balance out. It exists because the wallet accumulates things
+the automation will never touch: dust left by a zap out, an airdrop, the remains of a token whose
+pool has been closed. Consolidating any of that used to mean leaving the app for a DEX front-end.
+
+It is not a trading screen. There is no limit order, no chart, no position tracking. What it runs on
+is the **same Jupiter leg the rebalancer swaps with** — same slippage setting, same priority-fee
+ceiling, same `MAX_SWAP_PRICE_IMPACT_BPS` — so a manual swap is one the automation would have been
+willing to make.
+
+The sell side offers only what the wallet holds, because anything else is a swap that cannot be
+funded. The buy side opens on SOL and USDC plus whatever the wallet already holds — no search needed
+for the destinations that account for most swaps — and typing searches Jupiter's whole index from
+there.
+
+Every row **shows the mint**, and flags the unverified ones. That is not caution for its own sake: the
+search is fuzzy, symbols are not unique, and this project has already been bitten once by a name
+search matching a counterfeit token. A search for `USDC` on a live box returns a real USDC *and* an
+unverified one at $0.0000021. Logos come from Jupiter's index where it has one, and are drawn as
+initials where it does not — which is most long-tail mints, so the plain disc is the ordinary case.
+An icon is decoration; the mint is the identity.
+
+Four things stop a swap before it is signed:
+
+| Refusal | Why |
+| --- | --- |
+| A rebalance is unfinished | The withdrawn side is sitting in the wallet waiting to be redeposited. See below. |
+| Price impact over `MAX_SWAP_PRICE_IMPACT_BPS` | Whether a route is worth taking does not change because a human pressed the button. |
+| More than the spendable balance | `MIN_SOL_BALANCE` is withheld from any SOL swap, which is why `MAX` never offers the whole balance. |
+| A mint neither the wallet nor Jupiter knows | Its decimals are unknowable, and guessing misreports the amount received by orders of magnitude. |
+
+**The pending-journal refusal is the one that matters.** Between a rebalance's withdraw and its
+deposit, the withdrawn tokens sit in the wallet as an ordinary balance — indistinguishable, on this
+screen, from spare change. Spending them is exactly how funds have been stranded in this project
+before, so while any journal entry is open the swap simply will not run.
+
+Selling a token that a managed position's pool uses is allowed, and says so. The position's own
+liquidity is untouched by a wallet swap; what the notice is really about is that the rebalancer
+spends this balance when it redeposits.
+
+`PREVIEW` costs a quote and no fee, and is the only place the route, the price impact and the
+minimum received appear. `CONFIRM` re-quotes and re-runs every guard against fresh state, because
+the plan on screen was priced seconds ago.
+
+**`DRY_RUN` does not suppress a manual swap.** That flag exists to stop the unattended engine moving
+money on its own; a swap someone previewed and confirmed is not unattended, and a confirm button
+that silently simulates would be a lie about where the funds now are. It is the only send path in
+the app that overrides `DRY_RUN`.
 
 ## The rebalance alert
 

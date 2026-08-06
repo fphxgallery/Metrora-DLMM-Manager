@@ -11,6 +11,8 @@ export interface TokenAccountView {
   uiAmount: number;
   rentLamports: number;
   symbol: string | null;
+  /** Logo URL from Jupiter's index. Null for most long-tail mints. */
+  icon: string | null;
   usdPrice: number | null;
   usdValue: number | null;
   lockedReason: string | null;

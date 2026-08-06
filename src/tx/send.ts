@@ -166,12 +166,22 @@ export class TxSender {
    * Sends an already-signed versioned transaction (Jupiter builds and we sign
    * these; blockhash and compute budget come from Jupiter, so nothing here may
    * modify the message).
+   *
+   * `force` sends even under DRY_RUN, and exists for exactly one caller: the
+   * manual swap. DRY_RUN's job is to stop the UNATTENDED engine from moving
+   * money — a swap a human has previewed and confirmed is not unattended, and a
+   * confirm button that silently simulates is worse than no button. Nothing on
+   * the automatic path may pass this flag.
    */
-  async sendVersioned(tx: VersionedTransaction, label: string): Promise<SendResult> {
+  async sendVersioned(
+    tx: VersionedTransaction,
+    label: string,
+    opts: { force?: boolean } = {},
+  ): Promise<SendResult> {
     const sim = await this.connection.simulateTransaction(tx, { replaceRecentBlockhash: true });
     assertSimulationOk(sim.value, label);
 
-    const dryRun = this.dryRun();
+    const dryRun = this.dryRun() && !opts.force;
     const base = { label, dryRun, unitsConsumed: sim.value.unitsConsumed, logs: sim.value.logs ?? undefined };
     if (dryRun) {
       this.log.info({ label, unitsConsumed: sim.value.unitsConsumed }, "DRY-RUN: simulated ok, not sending");

@@ -6,8 +6,9 @@ import { MetricsTab } from "./components/MetricsTab.tsx";
 import { PoolsTab } from "./components/PoolsTab.tsx";
 import { PositionsTab } from "./components/PositionsTab.tsx";
 import { SettingsTab } from "./components/SettingsTab.tsx";
+import { SwapTab } from "./components/SwapTab.tsx";
 
-const TABS = ["POOLS", "POSITIONS", "METRICS", "LOGS", "SETTINGS"] as const;
+const TABS = ["POOLS", "POSITIONS", "SWAP", "METRICS", "LOGS", "SETTINGS"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function App() {
@@ -93,6 +94,7 @@ export default function App() {
 
       {tab === "POOLS" && <PoolsTab />}
       {tab === "POSITIONS" && <PositionsTab />}
+      {tab === "SWAP" && <SwapTab />}
       {tab === "METRICS" && <MetricsTab />}
       {tab === "LOGS" && <LogsTab />}
       {tab === "SETTINGS" && <SettingsTab onChanged={() => void refreshStatus()} />}

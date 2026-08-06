@@ -36,10 +36,25 @@ export interface RawTokenAccount {
 export interface TokenMeta {
   symbol?: string;
   usdPrice?: number;
+  /**
+   * The mint's own decimals. Absent for a mint Jupiter does not index.
+   *
+   * Not needed by the wallet listing — every account there carries its own — but
+   * it is the only way to scale a swap into a token the wallet does not hold
+   * yet, where there is no account to read.
+   */
+  decimals?: number;
+  /**
+   * URL of the token's logo, as Jupiter serves it. Absent for most long-tail
+   * mints — the UI draws initials instead, which is the ordinary case here, not
+   * a failure.
+   */
+  icon?: string;
 }
 
 export interface TokenAccountView extends RawTokenAccount {
   symbol: string | null;
+  icon: string | null;
   usdPrice: number | null;
   usdValue: number | null;
   /** Null when the account can be closed; otherwise why it cannot. */
@@ -81,6 +96,7 @@ export function buildTokenView(a: RawTokenAccount, meta: TokenMeta | undefined, 
   return {
     ...a,
     symbol: meta?.symbol ?? null,
+    icon: meta?.icon ?? null,
     usdPrice,
     usdValue: usdPrice === null ? null : a.uiAmount * usdPrice,
     lockedReason: lockReason(a, inUseMints),
@@ -151,17 +167,79 @@ export async function fetchTokenMeta(mints: string[], timeoutMs = 10_000): Promi
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) continue;
-      const rows = (await res.json()) as { id?: string; symbol?: string; usdPrice?: number }[];
+      const rows = (await res.json()) as JupToken[];
       if (!Array.isArray(rows)) continue;
       // Keyed by id, not by position: the response order does not follow the query.
       for (const r of rows) {
-        if (r?.id) out.set(r.id, { symbol: r.symbol, usdPrice: r.usdPrice });
+        if (r?.id) out.set(r.id, { symbol: r.symbol, usdPrice: r.usdPrice, decimals: r.decimals, icon: r.icon });
       }
     } catch {
       // Leave this batch unpriced.
     }
   }
   return out;
+}
+
+interface JupToken {
+  id?: string;
+  name?: string;
+  symbol?: string;
+  usdPrice?: number;
+  decimals?: number;
+  icon?: string;
+  isVerified?: boolean;
+  liquidity?: number;
+}
+
+/** One candidate token for the swap's buy-side picker. */
+export interface TokenSearchResult {
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  usdPrice: number | null;
+  decimals: number | null;
+  icon: string | null;
+  /**
+   * Jupiter's own verification flag, passed through unchanged.
+   *
+   * The search is FUZZY, and symbols are not unique — a counterfeit mint answers
+   * to the same ticker as the real one, which has already cost this project once
+   * (a $0.0002 "SOL" in a pool named SOL-USDC). The UI shows the mint on every
+   * row and flags the unverified ones, because the symbol alone is not evidence.
+   */
+  verified: boolean;
+  liquidity: number | null;
+}
+
+/**
+ * Free-text or by-mint token lookup, from the same Jupiter index the wallet
+ * listing is priced from. Never throws — an empty list is a usable answer.
+ */
+export async function searchTokens(query: string, limit = 12, timeoutMs = 10_000): Promise<TokenSearchResult[]> {
+  try {
+    const res = await fetch(`${JUP_SEARCH_URL}?query=${encodeURIComponent(query)}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return [];
+    const rows = (await res.json()) as JupToken[];
+    if (!Array.isArray(rows)) return [];
+
+    return rows
+      .filter((r): r is JupToken & { id: string } => typeof r?.id === "string")
+      .slice(0, limit)
+      .map((r) => ({
+        mint: r.id,
+        symbol: r.symbol ?? null,
+        name: r.name ?? null,
+        usdPrice: typeof r.usdPrice === "number" ? r.usdPrice : null,
+        decimals: typeof r.decimals === "number" ? r.decimals : null,
+        icon: typeof r.icon === "string" ? r.icon : null,
+        verified: r.isVerified === true,
+        liquidity: typeof r.liquidity === "number" ? r.liquidity : null,
+      }));
+  } catch {
+    return [];
+  }
 }
 
 export function closeAccountIx(view: TokenAccountView, owner: PublicKey) {

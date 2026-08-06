@@ -43,6 +43,7 @@ import { registerPositionRoutes } from "./routes/positions.js";
 import { registerWalletTokenRoutes } from "./routes/wallet.js";
 import { registerApeRoutes } from "./routes/ape.js";
 import { registerZapOutRoutes } from "./routes/zapout.js";
+import { registerSwapRoutes } from "./routes/swap.js";
 import { isAutoRebalance, isDryRun, type AppContext } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -345,6 +346,8 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
   // store — so Ape runs on exactly the machinery the rebalancer does.
   registerApeRoutes(app, rebalanceDeps);
   registerZapOutRoutes(app, rebalanceDeps);
+  // And so does the manual swap: SwapDeps is another subset of the same set.
+  registerSwapRoutes(app, rebalanceDeps);
 
   // ---------------------------------------------------------------- logs ----
 

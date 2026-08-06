@@ -1230,3 +1230,315 @@ table.wal td.num {
   color: var(--text-faint);
   font-size: 11px;
 }
+
+/* ---------- swap ---------- */
+
+/* The card is capped rather than fluid: a sell/buy pair reads as a single object
+   only while both legs stay narrow enough to scan in one glance. The wallet
+   takes the slack. Below 900px they stack, card first. */
+.swap-wrap {
+  display: grid;
+  grid-template-columns: minmax(340px, 520px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .swap-wrap {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sw-leg {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.sw-leg-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sw-leg-top .lbl {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+
+.sw-bal {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.sw-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sw-token {
+  background: var(--panel);
+  border: 1px solid var(--border-hot);
+  border-radius: 999px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  /* Same reason the segmented buttons carry it: a button ignores min-width:auto,
+     so a flex parent will happily squeeze a ticker below its own text. */
+  flex: 0 0 auto;
+}
+
+.sw-token:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* The amount is the one thing on this card that should be readable across the
+   room, so it gets the size and loses the input chrome. */
+.sw-amt {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+}
+
+.sw-amt input {
+  width: 100%;
+  text-align: right;
+  font-size: 26px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+}
+
+.sw-amt input:focus {
+  outline: none;
+}
+
+.sw-amt input:read-only {
+  color: var(--text-dim);
+}
+
+.sw-amt .usd {
+  font-size: 11px;
+  color: var(--text-faint);
+  min-height: 17px;
+}
+
+.sw-amt .usd .good {
+  color: var(--good);
+}
+.sw-amt .usd .bad {
+  color: var(--bad);
+}
+
+/* Sits in the seam between the two legs, overlapping both. */
+.sw-flip {
+  display: flex;
+  justify-content: center;
+  margin: -9px 0;
+  position: relative;
+  z-index: 2;
+}
+
+.sw-flip button {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border-hot);
+  color: var(--text-dim);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sw-flip button:hover {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.sw-quote {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.sw-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  padding: 3px 0;
+  color: var(--text-dim);
+}
+
+.sw-line b {
+  color: var(--text);
+  font-weight: 400;
+  text-align: right;
+}
+
+.sw-line .good {
+  color: var(--good);
+}
+.sw-line .warn {
+  color: var(--warn);
+}
+
+.sw-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.sw-picker {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+/* A holding is a button, not a row: clicking one loads it into the sell leg, and
+   that has to be obvious without a hover to discover it. */
+.hold-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hold-row:hover {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
+.hold-row.on {
+  border-color: var(--accent-dim);
+  background: var(--panel-2);
+}
+
+.hold-row .sym {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.hold-row .sym .sub {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.hold-row .amt {
+  text-align: right;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.hold-row .amt .usd {
+  display: block;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.tag.warn {
+  color: var(--warn);
+  border-color: rgba(251, 191, 36, 0.4);
+}
+
+.msg.warn {
+  border-color: rgba(251, 191, 36, 0.4);
+  color: var(--warn);
+}
+
+/* Token logo, and the initials disc that stands in when there is none. Both are
+   the same size, so a missing image never shifts the row beside it. */
+.tk {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  object-fit: cover;
+  background: var(--panel-2);
+}
+
+.tk-fb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  font-size: 9px;
+  letter-spacing: 0;
+  font-weight: 700;
+  color: #07090d;
+  background: #6b7686;
+}
+
+.sw-token {
+  gap: 8px;
+  padding-left: 6px;
+}
+
+/* The buy picker's defaults: one row of chips above the wallet's own tokens. */
+.quick {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.quick button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-hot);
+  border-radius: 999px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 11px 4px 5px;
+  cursor: pointer;
+}
+
+.quick button:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.pick-sec {
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  margin: 10px 0 2px;
+  padding: 0 8px;
+}
