@@ -515,12 +515,16 @@ rounding.
 
 `usd` remains available and needs no denominator.
 
-**One function, one number.** `pnlPctOf` is the only way a percentage is taken out of the indexer's
-response, and the position card, the trigger gauge and the Telegram alert all call it. They did not,
-briefly: v1.11.4 moved the trigger onto the derived figure and left every *display* reading
-`pnlPctChange`, so the same position showed −1.34% on its card and −3.35% on its own trigger gauge —
-and the larger, more prominent number was the diluted one. The API field is called `pnlPct` rather
-than `pnlPctChange` so the next thing wired up cannot mistake it for a passthrough.
+**The card and the trigger gauge show different numbers, deliberately.** The position card and the
+Telegram alert pass Meteora's `pnlPctChange` straight through, so the dashboard can be read side by
+side with Meteora's own portfolio page. The trigger gauge shows `pnlPctOf` — the number a stop loss
+is actually measured with. On STONK after two rebalances those read −0.10% and −0.34%, and the gap
+widens with every rebalance.
+
+That is not a bug to reconcile, and it has been "fixed" in both directions once each. v1.11.5 moved
+the card onto the derived figure and it stopped matching Meteora; v1.11.6 put it back. What must
+never change is the trigger: a stop loss measured with `pnlPctChange` is the KIO bug, and it is the
+reason this section exists.
 
 ### Changing the measure disarms every armed position
 

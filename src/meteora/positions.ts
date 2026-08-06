@@ -7,7 +7,7 @@ import type { DataApi, DataApiPool, PositionPnL } from "./datapi.js";
 import type { MeteoraClient } from "./client.js";
 import { DLMM, type DlmmPool, type PositionData } from "./sdk.js";
 import { priceOfBin, rangeStatus, toUi, valuePosition } from "./pricing.js";
-import { pnlPctOf, positionFeeTvlPct, sinceOpenFeeRate } from "../metrics.js";
+import { positionFeeTvlPct, sinceOpenFeeRate } from "../metrics.js";
 import { MEASURE_REV } from "../triggers.js";
 
 /**
@@ -92,18 +92,21 @@ export interface PositionView {
   pnl: {
     pnlUsd: number;
     /**
-     * PnL as a percent of capital committed — OUR figure, not the indexer's.
+     * The indexer's own percentage, passed through verbatim.
      *
-     * Named `pnlPct` rather than `pnlPctChange` on purpose. It used to carry
-     * `pnlPctChange` verbatim, and when v1.11.4 moved the trigger onto the
-     * derived percentage this field was missed, so the card and the trigger
-     * gauge showed different numbers for the same position. The name no longer
-     * matches the indexer's, so the next person to wire something up cannot
-     * assume it is a passthrough. See pnlPctOf.
+     * DELIBERATELY not the figure the trigger acts on. This field exists so the
+     * dashboard reads the same as Meteora's portfolio page, which is what it is
+     * cross-checked against; `pnlPctOf` is what a stop loss is measured with,
+     * and the trigger gauge shows that instead.
      *
-     * Null when the position has no capital left to express a return on.
+     * The two therefore disagree, by design, and disagree more the more a
+     * position has rebalanced — this one divides by CUMULATIVE deposits. On
+     * STONK after two rebalances they read -0.10% and -0.34%. Do not "reconcile"
+     * them: the whole of v1.11.4 is that a stop cannot be measured with this
+     * number, and the whole of v1.11.6 is that the operator wants the card to
+     * match Meteora anyway.
      */
-    pnlPct: number | null;
+    pnlPctChange: number;
     allTimeFeesUsd: number;
   } | null;
 
@@ -284,7 +287,7 @@ function buildView(args: {
     pnl: pnl
       ? {
           pnlUsd: Number(pnl.pnlUsd),
-          pnlPct: pnlPctOf(pnl),
+          pnlPctChange: Number(pnl.pnlPctChange),
           allTimeFeesUsd: Number(pnl.allTimeFees?.total?.usd ?? 0),
         }
       : null,

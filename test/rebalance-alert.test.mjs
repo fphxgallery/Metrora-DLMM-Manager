@@ -33,7 +33,7 @@ function plan(over = {}) {
 function snapshot(over = {}) {
   return {
     pnlUsd: -3.31,
-    pnlPct: -0.37,
+    pnlPctChange: -0.37,
     lifetimeFeesUsd: 9.83,
     claimedFeesUsd: 0.9418,
     feePerDayUsd: 62.17,
@@ -143,7 +143,7 @@ test("the swap row appears only on path B", () => {
 test("an unindexed position says so rather than printing a zero", () => {
   // A zero here reads as "this position has made nothing", which is a different
   // claim from "the indexer has not caught up".
-  const rows = block(render({ pnlUsd: null, pnlPct: null, lifetimeFeesUsd: null })).join("\n");
+  const rows = block(render({ pnlUsd: null, pnlPctChange: null, lifetimeFeesUsd: null })).join("\n");
 
   assert.match(rows, /PnL\s+not indexed yet/);
   assert.ok(!/PnL\s+\$0\.00/.test(rows));
@@ -245,11 +245,13 @@ test("another position's PnL in the same pool is not picked up", async () => {
   assert.equal(s.positionFeeTvlPct, null);
 });
 
-test("the alert reports the derived percentage, never the indexer's", async () => {
-  // The v1.11.4 miss: the trigger moved onto the derived figure and every DISPLAY
-  // of it kept reading pnlPctChange, so the same position showed two different
-  // percentages. pnlPctChange here is deliberately nothing like the truth.
-  const s = await snapshotBeforeRebalance(
+test("the alert reports the indexer's percentage, matching the position card", () => {
+  // Deliberately NOT the figure the stop loss is measured with. The card is
+  // cross-checked against Meteora's own portfolio page, so it and the alert both
+  // pass that number through; the trigger gauge shows % of capital instead, and
+  // "the trigger reads the derived percentage, never the indexer's" in
+  // trigger-measure-unit.test.mjs is what holds that side in place.
+  return snapshotBeforeRebalance(
     snapDeps({
       pnl: {
         positionAddress: "POS1",
@@ -263,31 +265,10 @@ test("the alert reports the derived percentage, never the indexer's", async () =
     }),
     MANAGED,
     plan({ valueUsd: 200 }),
-  );
-
-  // -5 over the $100 actually committed, not over $1000 of cumulative deposits.
-  assert.equal(s.pnlPct, -5, `read the indexer's diluted figure: ${s.pnlPct}`);
-  assert.ok(String(s.pnlPct) !== "-0.5");
-});
-
-test("a position with no capital left reports no percentage rather than a wild one", async () => {
-  const s = await snapshotBeforeRebalance(
-    snapDeps({
-      pnl: {
-        positionAddress: "POS1",
-        feePerTvl24h: "10",
-        pnlUsd: "-5",
-        pnlPctChange: "-0.5",
-        allTimeDeposits: { total: { usd: "900" } },
-        allTimeWithdrawals: { total: { usd: "900" } },
-        allTimeFees: { total: { usd: "3" } },
-      },
-    }),
-    MANAGED,
-    plan({ valueUsd: 200 }),
-  );
-
-  // Rendering with a null percentage is covered by "each figure degrades on its
-  // own"; what matters here is that a zero basis produces null and not Infinity.
-  assert.equal(s.pnlPct, null);
+  ).then((s) => {
+    assert.equal(s.pnlPctChange, -0.5, `expected Meteora's figure, got ${s.pnlPctChange}`);
+    // -5 over the $100 committed would be -5%. That number belongs to the
+    // trigger, and must not leak into the alert.
+    assert.notEqual(s.pnlPctChange, -5);
+  });
 });

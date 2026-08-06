@@ -66,7 +66,9 @@ export interface PositionView {
     positionPctPer24h: number | null;
     poolPctPer24h: number | null;
   };
-  pnl: { pnlUsd: number; pnlPct: number | null; allTimeFeesUsd: number } | null;
+  // The indexer's percentage, matching Meteora's own page. The trigger gauge
+  // shows % of capital instead, and the two differ on purpose.
+  pnl: { pnlUsd: number; pnlPctChange: number; allTimeFeesUsd: number } | null;
 }
 
 export interface PositionsResponse {
@@ -512,7 +514,7 @@ function PositionCard({
           v={p.pnl ? fmtUsd(p.pnl.pnlUsd) : "—"}
           cls={p.pnl ? (p.pnl.pnlUsd >= 0 ? "good" : "bad") : undefined}
         >
-          {p.pnl ? `${fmtPct(p.pnl.pnlPct)} · lifetime ${fmtUsd(p.pnl.allTimeFeesUsd)}` : "not indexed yet"}
+          {p.pnl ? `${fmtPct(p.pnl.pnlPctChange)} · lifetime ${fmtUsd(p.pnl.allTimeFeesUsd)}` : "not indexed yet"}
         </Fact>
         {/*
           The accrual RATE, not the token split the old tile showed. Both are

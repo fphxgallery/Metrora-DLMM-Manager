@@ -3,7 +3,7 @@ import type { MeteoraClient } from "./meteora/client.js";
 import type { Logger } from "./logger.js";
 import type { ManagedPosition } from "./state.js";
 import type { RebalancePlan } from "./meteora/rebalance.js";
-import { pnlPctOf, positionFeeTvlPct } from "./metrics.js";
+import { positionFeeTvlPct } from "./metrics.js";
 import { escapeHtml } from "./notify.js";
 
 /**
@@ -24,8 +24,12 @@ import { escapeHtml } from "./notify.js";
 
 export interface RebalanceSnapshot {
   pnlUsd: number | null;
-  /** Percent of capital committed — see pnlPctOf, NOT the indexer's field. */
-  pnlPct: number | null;
+  /**
+   * The indexer's own percentage, matching the position card and Meteora's
+   * portfolio page. NOT the figure a stop loss is measured with — see
+   * `pnlPctOf` and the note on PositionView.pnl.
+   */
+  pnlPctChange: number | null;
   lifetimeFeesUsd: number | null;
   /** Unclaimed at snapshot time — i.e. what this rebalance collects on the way through. */
   claimedFeesUsd: number | null;
@@ -57,7 +61,7 @@ export async function snapshotBeforeRebalance(
 ): Promise<RebalanceSnapshot> {
   const base: RebalanceSnapshot = {
     pnlUsd: null,
-    pnlPct: null,
+    pnlPctChange: null,
     lifetimeFeesUsd: null,
     claimedFeesUsd: plan.unclaimedFeesUsd,
     feePerDayUsd: null,
@@ -81,7 +85,7 @@ export async function snapshotBeforeRebalance(
   return {
     ...base,
     pnlUsd: pnl ? numOrNull(pnl.pnlUsd) : null,
-    pnlPct: pnl ? pnlPctOf(pnl) : null,
+    pnlPctChange: pnl ? numOrNull(pnl.pnlPctChange) : null,
     lifetimeFeesUsd: pnl ? numOrNull(pnl.allTimeFees?.total?.usd) : null,
     positionFeeTvlPct: rate,
     poolFeeTvlPct: meta?.fee_tvl_ratio?.["24h"] ?? null,
@@ -125,7 +129,7 @@ export function rebalanceAlertHtml(args: {
   rows.push(
     snapshot.pnlUsd == null
       ? row("PnL", "not indexed yet")
-      : row("PnL", usd(snapshot.pnlUsd), snapshot.pnlPct == null ? "" : pct(snapshot.pnlPct)),
+      : row("PnL", usd(snapshot.pnlUsd), snapshot.pnlPctChange == null ? "" : pct(snapshot.pnlPctChange)),
   );
   rows.push(
     row(
