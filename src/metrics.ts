@@ -138,6 +138,52 @@ export function swapCostUsdOf(rs: RebalanceRecord[]): number {
 }
 
 /**
+ * Fee income over the window the cost ledger actually covers.
+ *
+ * `allTimeFees` is the indexer's figure and counts from the position's birth.
+ * The cost ledger can be emptied from the dashboard. Comparing the two after a
+ * reset put lifetime income against a few hours of spending — on the live box
+ * that read as 1% cost drag while the ledger held 2 of 56 rebalances, wrong by
+ * a factor of about 28 and wrong in the flattering direction, which is the one
+ * that matters for a figure whose entire job is to answer "is this worth it".
+ *
+ * Subtracting the baseline is the same rule `partitionRebalances` applies across
+ * positions, applied across time: cost and income must describe the same thing.
+ *
+ * Never negative. A falling all-time total means the indexer has contradicted
+ * itself — claimed fees only rise — so it is read as "nothing since the reset"
+ * rather than as negative income.
+ */
+export function feesSinceBaseline(allTimeUsd: number, baselineUsd: number | undefined): number {
+  if (!Number.isFinite(allTimeUsd) || allTimeUsd <= 0) return 0;
+  if (baselineUsd === undefined || !Number.isFinite(baselineUsd)) return allTimeUsd;
+  return Math.max(0, allTimeUsd - baselineUsd);
+}
+
+/**
+ * How many managed positions have a fee baseline covering the current ledger.
+ *
+ * A position opened AFTER the last reset needs none — its whole history is
+ * inside the window already — so this only counts the ones that were around for
+ * a reset and could not be priced at the time. Anything other than zero means
+ * fee income is overstated by those positions' pre-reset earnings.
+ */
+export function feeBaselineCoverage(
+  positions: Pick<ManagedPosition, "openedAt" | "feeBaselineUsd" | "feeBaselineAt">[],
+  lastResetAt: number | undefined,
+): { covered: number; uncovered: number } {
+  if (lastResetAt === undefined) return { covered: 0, uncovered: 0 };
+  let covered = 0;
+  let uncovered = 0;
+  for (const p of positions) {
+    if (p.openedAt >= lastResetAt) continue; // opened since the reset, nothing to exclude
+    if (p.feeBaselineUsd === undefined) uncovered += 1;
+    else covered += 1;
+  }
+  return { covered, uncovered };
+}
+
+/**
  * How much of the cost ledger actually has its swap cost measured.
  *
  * Reported so the dashboard can say "this figure is still incomplete" rather

@@ -59,6 +59,23 @@ export interface ManagedPosition {
   /** Stop loss / take profit. Absent means never armed for this position. */
   triggers?: PositionTriggers;
   openedAt: number;
+  /**
+   * All-time fee income this position had already earned when the cost ledger
+   * was last cleared, in USD.
+   *
+   * The ledger can be emptied from the dashboard; the indexer's `allTimeFees`
+   * cannot. Without this, cost restarts at zero while fee income keeps counting
+   * from the position's birth, and every ratio derived from the two — net, cost
+   * drag — reads flatteringly and gives no sign of it. Subtracting the baseline
+   * puts both back on the same window, which is the same rule
+   * `partitionRebalances` applies across positions, applied across time.
+   *
+   * Unset means no reset has happened since this position was opened, so its
+   * whole history counts.
+   */
+  feeBaselineUsd?: number;
+  /** When that baseline was taken, so the dashboard can name the window. */
+  feeBaselineAt?: number;
   lastRebalanceAt?: number;
   /**
    * When a rebalance was last ATTEMPTED, success or not. The cooldown keys off
@@ -160,6 +177,15 @@ export interface PersistedState {
   positions: ManagedPosition[];
   journal: JournalEntry[];
   rebalances: RebalanceRecord[];
+  /**
+   * When the cost ledger was last emptied, or unset if it never has been.
+   *
+   * The window every cost figure describes. Reported so the dashboard can say
+   * "since 6 Aug" rather than presenting a few hours of spending as a lifetime
+   * total, and so `feeBaselineCoverage` can tell a position opened after the
+   * reset (nothing to exclude) from one that was there and could not be priced.
+   */
+  ledgerResetAt?: number;
   /** Global auto-rebalance kill switch set from the UI; overrides AUTO_REBALANCE. */
   autoOverride?: boolean;
   /** Runtime DRY_RUN override set from the UI. Undefined = use the env flag. */
@@ -328,6 +354,11 @@ export class Store {
     return this.data.rebalances;
   }
 
+  /** When the cost ledger was last emptied, or undefined if it never has been. */
+  ledgerResetAt(): number | undefined {
+    return this.data.ledgerResetAt;
+  }
+
   /**
    * Empties the cost ledger. Returns how many records were dropped.
    *
@@ -337,11 +368,29 @@ export class Store {
    * let a position rebalance again immediately — a chart reset must never move
    * real money. The journal is untouched for the same reason: a pending entry is
    * the only record that funds are sitting in the wallet.
+   *
+   * `feeBaselines` is each managed position's all-time fee income as it stands
+   * right now, keyed by position. Cost is about to restart at zero, and the
+   * indexer's fee figure will not — so the baseline is what keeps the two
+   * comparable afterwards. The caller reads those figures; passing an empty map
+   * clears the ledger without one, which is only correct when there is nothing
+   * managed to compare against.
    */
-  clearRebalances(): number {
+  clearRebalances(feeBaselines: ReadonlyMap<string, number> = new Map()): number {
     const n = this.data.rebalances.length;
-    if (n === 0) return 0;
     this.data.rebalances = [];
+
+    const at = Date.now();
+    this.data.ledgerResetAt = at;
+    for (const p of this.data.positions) {
+      const baseline = feeBaselines.get(p.positionPk);
+      // A position whose fees could not be read is left with no baseline rather
+      // than a stale or invented one, and metrics reports it as uncovered.
+      if (baseline === undefined) continue;
+      p.feeBaselineUsd = baseline;
+      p.feeBaselineAt = at;
+    }
+
     this.save();
     return n;
   }

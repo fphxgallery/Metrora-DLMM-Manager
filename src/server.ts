@@ -17,7 +17,15 @@ import {
   saveKeypairFile,
 } from "./wallet/keystore.js";
 import type { RebalanceDeps } from "./meteora/rebalance.js";
-import { cooldownFloor, lamportsOf, partitionRebalances, swapCostCoverage, swapCostUsdOf } from "./metrics.js";
+import {
+  cooldownFloor,
+  feeBaselineCoverage,
+  feesSinceBaseline,
+  lamportsOf,
+  partitionRebalances,
+  swapCostCoverage,
+  swapCostUsdOf,
+} from "./metrics.js";
 import { aggregateByTs, downsample } from "./history.js";
 
 /**
@@ -182,19 +190,30 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
 
     // Fee income comes from the indexer's per-position PnL, which counts fees
     // already claimed as well as those still sitting in the position.
+    //
+    // Netted against each position's baseline, so income describes the same
+    // window the cost ledger does. `allTimeFees` counts from a position's birth
+    // and no reset can touch it; cost restarts at zero every time the ledger is
+    // cleared. Compared raw, the two answered different questions and the answer
+    // always flattered the automation.
     const wallet = ctx.client.wallet()?.publicKey.toBase58();
     let feesEarnedUsd = 0;
+    let feesAllTimeUsd = 0;
     if (wallet) {
       const pools = [...new Set(positions.map((p) => p.poolAddress))];
       for (const pool of pools) {
         const pnls = await ctx.dataApi.positionPnlSafe(pool, wallet);
         for (const pnl of pnls) {
-          if (positions.some((p) => p.positionPk === pnl.positionAddress)) {
-            feesEarnedUsd += Number(pnl.allTimeFees?.total?.usd ?? 0);
-          }
+          const managed = positions.find((p) => p.positionPk === pnl.positionAddress);
+          if (!managed) continue;
+          const allTime = Number(pnl.allTimeFees?.total?.usd ?? 0);
+          feesAllTimeUsd += Number.isFinite(allTime) ? allTime : 0;
+          feesEarnedUsd += feesSinceBaseline(allTime, managed.feeBaselineUsd);
         }
       }
     }
+    const ledgerResetAt = store.ledgerResetAt();
+    const baseline = feeBaselineCoverage(positions, ledgerResetAt);
 
     const pollsTotal = positions.reduce((a, p) => a + p.pollsTotal, 0);
     const pollsInRange = positions.reduce((a, p) => a + p.pollsInRange, 0);
@@ -226,6 +245,21 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       retiredCount: retired.length,
       retiredCostUsd,
       feesEarnedUsd,
+      /**
+       * Fee income over the window the cost ledger covers, and the same figure
+       * before the baseline was netted off. Both, so a dashboard can show the
+       * comparable number and still say what the position has earned in total —
+       * and so the difference between them is visible rather than inferred.
+       */
+      feesAllTimeUsd,
+      /** When the cost ledger was last emptied; null if it never has been. */
+      ledgerResetAt: ledgerResetAt ?? null,
+      /**
+       * Managed positions that predate the reset and have no fee baseline, so
+       * their pre-reset income is still counted. Anything but zero means
+       * feesEarnedUsd is overstated and every ratio below with it.
+       */
+      feeBaselineUncovered: baseline.uncovered,
       netUsd: feesEarnedUsd - costUsd,
       /** Share of fee income eaten by rebalancing. */
       costDragPct: feesEarnedUsd > 0 ? (costUsd / feesEarnedUsd) * 100 : null,
@@ -356,10 +390,41 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
    */
   app.post("/api/history/reset", async (req, reply) => {
     if (!requireAuth(cfg, req, reply)) return;
+
+    /**
+     * Read each position's fee income BEFORE clearing, and store it as the
+     * baseline the next window is measured from.
+     *
+     * Cost is about to restart at zero and the indexer's `allTimeFees` will not,
+     * so without this the two describe different windows for as long as the
+     * positions live. Read first and clear second: a reset that cleared the cost
+     * and then failed to record the baseline would leave exactly the state this
+     * exists to prevent.
+     */
+    const wallet = ctx.client.wallet()?.publicKey.toBase58();
+    const baselines = new Map<string, number>();
+    if (wallet) {
+      for (const pool of [...new Set(store.positions().map((p) => p.poolAddress))]) {
+        for (const pnl of await ctx.dataApi.positionPnlSafe(pool, wallet)) {
+          const usd = Number(pnl.allTimeFees?.total?.usd ?? 0);
+          // A position the indexer has nothing for gets no baseline rather than
+          // a zero, which would silently claim it had earned nothing so far.
+          if (Number.isFinite(usd)) baselines.set(pnl.positionAddress, usd);
+        }
+      }
+    }
+
     const samples = ctx.samples.clear();
-    const records = store.clearRebalances();
-    ctx.log.warn({ samples, records }, "history reset — samples and cost ledger cleared");
-    return { ok: true, samples, records };
+    const records = store.clearRebalances(baselines);
+    const uncovered = feeBaselineCoverage(store.positions(), store.ledgerResetAt()).uncovered;
+    if (uncovered > 0) {
+      ctx.log.warn(
+        { uncovered },
+        "history reset — some positions' fee income could not be read, so their earnings before the reset still count",
+      );
+    }
+    ctx.log.warn({ samples, records, baselines: baselines.size, uncovered }, "history reset — samples and cost ledger cleared");
+    return { ok: true, samples, records, feeBaselines: baselines.size, feeBaselineUncovered: uncovered };
   });
 
   // -------------------------------------------------------------- domain ----

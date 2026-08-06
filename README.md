@@ -685,6 +685,22 @@ position eligible to rebalance a moment sooner, and no funds move. What it does 
 accounting: the Metrics tab's cost drag, path A/B split, cadence and churn figures, and the per-position
 rebalance-count breakdown all reset with the ledger.
 
+A reset also records each position's **fee baseline** — what it had earned at that moment — and
+`/api/metrics` reports income net of it. This is not cosmetic. Cost restarts at zero and the
+indexer's `allTimeFees` does not, so without a baseline the endpoint compared a position's lifetime
+income against a few hours of spending, and `costDragPct` and `netUsd` both came out flattering with
+nothing to indicate it. Netting the baseline off is the same rule that already keeps cost and income
+describing the same *positions*, applied to the same *window*.
+
+The baselines are read before anything is cleared, so a failure cannot leave cost wiped and income
+uncorrected. A position the indexer cannot price gets no baseline rather than a zero — a zero would
+claim it had earned nothing so far, which is the same error in a different place — and is counted in
+`feeBaselineUncovered`, so a partial baseline is visible rather than silent. `ledgerResetAt` names
+the window.
+
+The chart itself was never affected: both its series are rebased to the plotted window, so its cost
+drag tile has always compared like with like. This changes the API's figures, not the chart's.
+
 ## Wallet
 
 The app signs unattended, so the key is a plain `keypair.json` at `KEYPAIR_PATH`, written `0600`.
