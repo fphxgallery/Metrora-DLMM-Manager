@@ -173,7 +173,7 @@ would attach an absurd priority fee to every transaction).
 | `APE_AUTO_MANAGE` | `false` | Whether a position opened by APE is enrolled in auto-rebalancing straight away |
 | `ZAP_OUT_TO` | `y` | Which side ZAP OUT consolidates into — `y` (quote) or `x` (base). A side, not a named token |
 | `TRIGGERS_ARMED` | `false` | Whether a crossed stop loss / take profit actually closes the position. `false` still evaluates and alerts |
-| `TRIGGER_MEASURE` | `usd` | Whether the thresholds below are `usd` (PnL in dollars) or `pct`. **Do not use `pct` for a stop loss** — see below |
+| `TRIGGER_MEASURE` | `pct` | Whether the thresholds below are `pct` (PnL % of capital committed) or `usd`. Changing it disarms every armed position — see below |
 | `STOP_LOSS` | unset | Close at or below this PnL. Must be negative; blank disables |
 | `TAKE_PROFIT` | unset | Close at or above this PnL. Must be positive; blank disables |
 | `TRIGGER_CONFIRMATIONS` | `3` | Consecutive readings past a threshold before anything closes — see below |
@@ -485,37 +485,51 @@ is not "fees went negative". A position earning fees perfectly well can hit one 
 pair diverged, which is a real thing to want to stop out of, but it is worth knowing that is what the
 number means.
 
-### Why the measure is USD, and why `pct` cannot be a stop
+### Why the percentage is ours and not Meteora's
 
-`TRIGGER_MEASURE=pct` reads the indexer's `pnlPctChange`, which is `pnlUsd / allTimeDeposits`. That
-denominator is **cumulative**: a path-B rebalance withdraws and redeposits the whole position, so
-every rebalance adds another position-notional to it. Measured across all four live positions on
-2026-08-06 the dilution was exactly `rebalanceCount + 1`:
+Meteora's `pnlPctChange` is `pnlUsd / allTimeDeposits`, and that denominator is **cumulative**: a
+path-B rebalance withdraws and redeposits the whole position, so every rebalance adds another
+position-notional to it. Measured across all four live positions on 2026-08-06 the dilution was
+exactly `rebalanceCount + 1`:
 
-| pair | rebalances | value | cumulative deposits | pnlUsd | `pnlPctChange` | true % of basis |
-|---|---|---|---|---|---|---|
-| JitoSOL-ONyc | 20 | $2972.69 | $64,689.14 | −$26.48 | −0.041% | −0.9% |
-| CATE-SOL | 65 | $81.90 | $4,944.12 | +$9.67 | +0.196% | +11.8% |
-| Cupsey-SOL | 1 | $68.01 | $142.17 | −$5.62 | −3.954% | −7.7% |
-| KIO-SOL | 14 | $47.00 | $922.22 | −$25.89 | −2.807% | −35.5% |
+| pair | rebalances | deposits | withdrawals | capital committed | pnlUsd | Meteora's % | **% of capital** |
+|---|---|---|---|---|---|---|---|
+| JitoSOL-ONyc | 20 | $64,689.14 | $61,657.03 | $3,032.11 | −$29.66 | −0.046% | −1.0% |
+| CATE-SOL | 65 | $5,114.79 | $4,978.48 | $136.31 | +$15.61 | +0.305% | +11.5% |
+| Cupsey-SOL | 1 | $208.02 | $131.83 | $76.19 | −$7.44 | −3.576% | −9.8% |
+| KIO-SOL | 14 | $922.22 | $833.10 | $89.12 | −$23.97 | −2.599% | −26.9% |
 
-KIO was 35% down against a −3% stop that read −2.8% and could not fire. The stop gets weaker the more
-a position churns, so the position most in need of one is the least protected. Meteora's own UI shows
-this same percentage — it is a display there, and nothing acts on it.
+KIO was 27% down on its capital against a −3% stop that read −2.6% and could not fire. The measure
+got weaker the more a position churned, so the position most in need of a stop was the least
+protected. That number is a display on Meteora's own UI and nothing acts on it; here it closes
+positions.
 
-`pnlUsd` is the dollar figure from the same response and has no denominator to corrupt, so it is the
-default from v1.11.3. `pct` remains selectable for a position that never rebalances; do not use it
-for a stop loss on one that does.
+So `pct` is computed here instead, dividing by **deposits less withdrawals** — the capital actually
+committed. Rebalances cancel out of it exactly, because each one adds the same amount to both sides.
+The identity `pnlUsd = value + fees − capital` reproduces the indexer's own `pnlUsd` on every live
+position, which is the check that this is the basis it measures against. `value − pnlUsd` was the
+other candidate and is wrong: fees already claimed and withdrawn get counted twice, reading +22.0%
+on CATE where the true figure was +11.5%. A position whose withdrawals have caught up with its
+deposits has no capital at risk and reports no reading at all, rather than a number that swings on
+rounding.
 
-**Changing the measure disarms every position that was already armed.** A threshold is a bare number,
-so `-3` means −3% under `pct` and −$3 under `usd` — switching silently reinterprets every stored
-threshold, and not in a safe direction. At the v1.11.3 switch, three of four live positions were
-already past their thresholds when read as dollars, two of them by accident. So the unit is stamped
-alongside the numbers when they are set, a mismatch disarms the position instead of acting on it, and
-`disarmedReason` says so in the UI and over Telegram. The thresholds are left as they were and are
-never auto-converted: the percent they were written in is a percent of cumulative deposits, which has
-no fixed relationship to the position's value, so any conversion would look deliberate and be
-arbitrary. Re-enter the two numbers in dollars to re-arm.
+`usd` remains available and needs no denominator.
+
+### Changing the measure disarms every armed position
+
+A threshold is a bare number: `-3` means −3% under `pct` and −$3 under `usd`, so switching silently
+reinterprets every stored threshold, and not in a safe direction. At the v1.11.3 switch, three of
+four live positions were already past their thresholds when read as dollars — two of them by
+accident. **And `pct` itself has been redefined**: v1.11.3 and earlier meant Meteora's diluted
+figure, v1.11.4 means percent of capital. On KIO the two read −2.6% and −26.9% at the same instant,
+so a `-3` written against the old one is nowhere near the position it describes under the new one.
+
+The unit and its revision are therefore stamped alongside the numbers whenever they are set —
+including a bare arm, since arming is the moment the operator last agreed with them. Any mismatch
+disarms the position instead of acting on it, and says why in the UI and over Telegram. Thresholds
+are never auto-converted: the old percent divided by a denominator with no fixed relationship to the
+capital in the position, so there is no factor to multiply by and any conversion would look
+deliberate while being arbitrary. Re-enter the two numbers to re-arm.
 
 ### Why confirmations exist
 

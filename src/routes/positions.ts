@@ -5,6 +5,7 @@ import { addLiquidity, claimFees, exitPosition, openPosition, type ActionDeps } 
 import { executeRebalance, planRebalance, type RebalanceDeps } from "../meteora/rebalance.js";
 import { TxError } from "../tx/send.js";
 import { STRATEGY_TYPES, TRIGGER_ACTIONS, type StrategyTypeName, type TriggerAction } from "../config.js";
+import { MEASURE_REV } from "../triggers.js";
 import type { AppContext } from "../types.js";
 
 export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, rebalanceDeps: RebalanceDeps): void {
@@ -293,6 +294,7 @@ export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, re
       // last looked at the thresholds and agreed with them — which is exactly
       // the claim the trigger needs before it may act on them.
       measure: cfg.triggerMeasure,
+      measureRev: MEASURE_REV,
       // Any edit clears the bookkeeping. A streak counted against the OLD
       // threshold is not evidence about the new one, and a refusal count that
       // survived a change of target token would disarm a route that now works.

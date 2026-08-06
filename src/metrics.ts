@@ -184,6 +184,44 @@ export function feeBaselineCoverage(
 }
 
 /**
+ * PnL as a percentage of the capital actually committed to a position.
+ *
+ * NOT the indexer's `pnlPctChange`, which is `pnlUsd / allTimeDeposits` — and
+ * `allTimeDeposits` is cumulative. A path-B rebalance withdraws and redeposits
+ * the whole position, so every rebalance adds another position-notional to that
+ * denominator, and the reported percentage shrinks toward zero no matter what
+ * the position does. Measured across four live positions the dilution was
+ * exactly `rebalanceCount + 1`: KIO, 27% down on its capital, reported -2.6%
+ * after 14 rebalances and sat under a -3% stop that could never fire. The
+ * measure got weaker the more a position churned, so the position most in need
+ * of a stop was the least protected.
+ *
+ * The denominator here is deposits MINUS withdrawals — capital in, less capital
+ * already taken back out. Rebalances cancel out of it exactly, because each one
+ * adds the same amount to both sides. The accounting identity
+ * `pnlUsd = value + fees - net` reproduces the indexer's own `pnlUsd` on every
+ * live position, which is the check that this is the basis it is measuring
+ * against.
+ *
+ * `value - pnlUsd` was the other candidate and is wrong: fees already claimed
+ * and withdrawn are counted twice, which on a fee-heavy position read +22.0%
+ * where the true figure was +11.5%.
+ *
+ * Null rather than a number when the basis is too small to divide by. A position
+ * whose withdrawals have caught up with its deposits has no capital at risk to
+ * express a return on, and the percentage would swing wildly on rounding — the
+ * caller treats null as "no reading", which is the one state that never fires.
+ */
+export const MIN_PNL_BASIS_USD = 1;
+
+export function pnlPctOfBasis(pnlUsd: number, depositsUsd: number, withdrawalsUsd: number): number | null {
+  if (!Number.isFinite(pnlUsd) || !Number.isFinite(depositsUsd) || !Number.isFinite(withdrawalsUsd)) return null;
+  const basis = depositsUsd - withdrawalsUsd;
+  if (!(basis >= MIN_PNL_BASIS_USD)) return null;
+  return (pnlUsd / basis) * 100;
+}
+
+/**
  * How much of the cost ledger actually has its swap cost measured.
  *
  * Reported so the dashboard can say "this figure is still incomplete" rather

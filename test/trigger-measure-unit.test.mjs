@@ -5,23 +5,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify from "fastify";
 
-import { evaluateTrigger, TriggerRunner } from "../dist/triggers.js";
+import { evaluateTrigger, TriggerRunner, MEASURE_REV } from "../dist/triggers.js";
+import { pnlPctOfBasis, MIN_PNL_BASIS_USD } from "../dist/metrics.js";
 import { Store } from "../dist/state.js";
 import { registerPositionRoutes } from "../dist/routes/positions.js";
 import { loadConfig } from "../dist/config.js";
 
-// A threshold is a bare number, so its meaning lives entirely in TRIGGER_MEASURE.
-// v1.11.3 changed that default from "pct" to "usd" because the indexer's
-// pnlPctChange divides by CUMULATIVE deposits -- measured on the live box the
-// denominator was exactly rebalanceCount + 1 times the position's value, so a
-// -3% stop on a position that had rebalanced 14 times was really a -58% stop and
-// KIO sat 35% down without firing.
+// A threshold is a bare number, so its meaning lives entirely in the measure.
 //
-// The switch that fixes that is also the hazard: the same stored numbers, read as
-// dollars, were ALREADY crossed on three of four live positions. Two of those
-// closes would have been accidents, and closing is terminal -- bin-array rent
-// never comes back. So the unit travels with the number, and a mismatch disarms
-// instead of acting.
+// The indexer's pnlPctChange divides by CUMULATIVE deposits, and a path-B
+// rebalance redeposits the whole position -- so the denominator grows by one
+// position-notional every rebalance. Measured live the dilution was exactly
+// rebalanceCount + 1: KIO, 27% down on its capital, reported -2.6% after 14
+// rebalances and sat under a -3% stop that could never fire.
+//
+// v1.11.3 sidestepped that by defaulting to usd. v1.11.4 fixes the percentage
+// itself, dividing by capital committed, and pct is the default again.
+//
+// Both changes are hazards as well as fixes, and for the same reason: the stored
+// numbers do not change when their meaning does. Read as dollars, three of four
+// live positions were ALREADY past their thresholds, two of them by accident.
+// And "pct" now names a different number than it did in v1.11.3 -- on KIO the two
+// definitions read -2.6% and -26.9% at the same instant. So the unit AND its
+// revision travel with the numbers, and any mismatch disarms instead of acting.
 
 const MIN = 60_000;
 const NOW = 1_800_000_000_000;
@@ -102,7 +108,7 @@ test("a matching unit evaluates normally and still fires", () => {
   const v = evaluateTrigger({
     now: NOW,
     reading: -26.15,
-    managed: position({ measure: "usd" }),
+    managed: position({ measure: "usd", measureRev: MEASURE_REV }),
     cfg: cfg(),
     busy: false,
   });
@@ -177,8 +183,8 @@ test("a stale position is disarmed rather than closed", async () => {
   assert.deepEqual(closed, [], "a position was CLOSED on a threshold in the wrong unit");
   assert.equal(store.position("POS1").triggers.on, false, "left armed while unable to ever fire");
   const why = store.position("POS1").triggers.disarmedReason;
-  assert.match(why, /set in pct/, "the reason must name the unit the numbers were written in");
-  assert.match(why, /now compare in usd/, "and the unit they are now being read as");
+  assert.match(why, /before v1\.11\.3/, "the reason must name what the numbers were written against");
+  assert.match(why, /now compare in \$/, "and what they are now being read as");
   assert.match(why, /Re-enter/, "and what to do about it");
   assert.equal(alerts.length, 1, "the operator was not told, or was told more than once");
   assert.match(alerts[0], /DISARMED/);
@@ -232,7 +238,7 @@ test("no PnL is fetched for a position whose unit is stale", async () => {
 });
 
 test("a correctly stamped position still closes through the runner", async () => {
-  const { runner, closed, alerts } = harness({ triggers: { measure: "usd" } });
+  const { runner, closed, alerts } = harness({ triggers: { measure: "usd", measureRev: MEASURE_REV } });
   await runner.run(NOW);
 
   assert.equal(closed.length, 1, "the guard blocked a legitimate stop loss");
@@ -296,7 +302,149 @@ test("arming an already-configured position re-stamps it", async () => {
 
 // ---------------------------------------------------------------- the default
 
-test("TRIGGER_MEASURE defaults to usd", () => {
+test("TRIGGER_MEASURE defaults to pct, which v1.11.4 made sound", () => {
   const c = loadConfig({ KEYPAIR_PATH: "/nonexistent", DATA_DIR: mkdtempSync(join(tmpdir(), "dlmm-cfg-")) });
-  assert.equal(c.triggerMeasure, "usd", "the percent measure cannot be used as a stop -- see the config comment");
+  assert.equal(c.triggerMeasure, "pct");
+});
+
+// ------------------------------------------------- the revision of the measure
+
+test("a pct stamp from v1.11.3 is as stale as no stamp at all", () => {
+  // Same unit name, different number. The old pct was the indexer's diluted
+  // figure; -3 written against it is nowhere near -3% of capital.
+  const v = evaluateTrigger({
+    now: NOW,
+    reading: -26.9,
+    managed: position({ measure: "pct", measureRev: undefined }),
+    cfg: cfg({ triggerMeasure: "pct" }),
+    busy: false,
+  });
+
+  assert.equal(v.fire, false, "a threshold written against the old percent was acted on");
+  assert.equal(v.code, "stale-measure");
+});
+
+test("an older revision is refused even when the unit matches exactly", () => {
+  const v = evaluateTrigger({
+    now: NOW,
+    reading: -26.9,
+    managed: position({ measure: "pct", measureRev: MEASURE_REV - 1 }),
+    cfg: cfg({ triggerMeasure: "pct" }),
+    busy: false,
+  });
+  assert.equal(v.code, "stale-measure");
+});
+
+test("the current revision on a matching unit fires normally", () => {
+  const v = evaluateTrigger({
+    now: NOW,
+    reading: -26.9,
+    managed: position({ measure: "pct", measureRev: MEASURE_REV }),
+    cfg: cfg({ triggerMeasure: "pct" }),
+    busy: false,
+  });
+  assert.equal(v.fire, true, "the revision guard blocked a correctly stamped threshold");
+});
+
+test("the disarm names the old definition rather than just the unit", async () => {
+  const { runner, store } = harness({
+    conf: cfg({ triggerMeasure: "pct" }),
+    triggers: { measure: "pct", measureRev: undefined },
+  });
+  await runner.run(NOW);
+
+  const why = store.position("POS1").triggers.disarmedReason;
+  assert.match(why, /before v1\.11\.4/, "an operator reading this must be able to tell the two percents apart");
+  assert.match(why, /capital committed/, "and know which one is now in force");
+  assert.doesNotMatch(why, /in pct but triggers now compare in pct/, "the message must not contradict itself");
+});
+
+test("the route stamps the current revision, not just the unit", async () => {
+  const { f, store } = app();
+  await f.inject({
+    method: "POST",
+    url: "/api/positions/POS1/triggers",
+    payload: { on: true, stopLoss: -3, takeProfit: 10 },
+  });
+
+  assert.equal(store.position("POS1").triggers.measureRev, MEASURE_REV);
+  await f.close();
+});
+
+// --------------------------------------------------------- the percentage itself
+
+test("the percentage divides by capital committed, not by cumulative deposits", () => {
+  // KIO's live figures. The indexer reported -2.599% against $922.22 of
+  // cumulative deposits; against the $89.12 actually committed it is -26.9%.
+  const pct = pnlPctOfBasis(-23.97, 922.22, 833.10);
+  assert.ok(Math.abs(pct - -26.9) < 0.1, `expected about -26.9%, got ${pct}`);
+});
+
+test("rebalances cancel out of the denominator exactly", () => {
+  // One rebalance withdraws the whole position and puts it back, adding the same
+  // amount to both sides. The percentage must not move.
+  const before = pnlPctOfBasis(-10, 100, 0);
+  const after = pnlPctOfBasis(-10, 100 + 90, 0 + 90);
+  assert.equal(after, before, "the measure decayed as the position churned -- the original bug");
+
+  // And it must still hold after fourteen of them, which is where KIO was.
+  let dep = 100;
+  let wd = 0;
+  for (let i = 0; i < 14; i++) {
+    dep += 90;
+    wd += 90;
+  }
+  assert.equal(pnlPctOfBasis(-10, dep, wd), before);
+});
+
+test("a position whose withdrawals have caught up with its deposits reads null", () => {
+  // No capital at risk to express a return on, and the percentage would swing on
+  // rounding. Null is "no reading", the one state that never fires.
+  assert.equal(pnlPctOfBasis(-10, 100, 100), null);
+  assert.equal(pnlPctOfBasis(-10, 100, 101), null, "a negative basis must not flip the sign of the reading");
+  assert.equal(pnlPctOfBasis(-10, 100, 100 - MIN_PNL_BASIS_USD / 2), null, "a basis under the floor still reads null");
+  assert.ok(pnlPctOfBasis(-10, 100, 100 - MIN_PNL_BASIS_USD) !== null, "exactly at the floor is usable");
+});
+
+test("a non-numeric field from the indexer reads null rather than NaN", () => {
+  assert.equal(pnlPctOfBasis(NaN, 100, 0), null);
+  assert.equal(pnlPctOfBasis(-10, Number("nope"), 0), null);
+  assert.equal(pnlPctOfBasis(-10, 100, Number(undefined)), null);
+});
+
+test("the trigger reads the derived percentage, never the indexer's", async () => {
+  // pnlPctChange is supplied and is comfortably inside the thresholds; the
+  // derived figure is past the stop. Only the derived one may be acted on.
+  const store = new Store(mkdtempSync(join(tmpdir(), "dlmm-derived-")));
+  const p = position({ measure: "pct", measureRev: MEASURE_REV, stopLoss: -20, takeProfit: 50 });
+  store.upsertPosition({ ...p, triggers: undefined });
+  store.setTriggers("POS1", p.triggers);
+
+  const closed = [];
+  const runner = new TriggerRunner(
+    {
+      cfg: cfg({ triggerMeasure: "pct" }),
+      store,
+      log: { info() {}, debug() {}, warn() {}, error() {} },
+      notifier: { notify() {} },
+      client: { wallet: () => ({ publicKey: { toBase58: () => "WALLET" } }) },
+      dataApi: {
+        positionPnlSafe: async () => [
+          {
+            positionAddress: "POS1",
+            pnlUsd: "-23.97",
+            pnlPctChange: "-2.599",
+            allTimeDeposits: { total: { usd: "922.22" } },
+            allTimeWithdrawals: { total: { usd: "833.10" } },
+          },
+        ],
+      },
+    },
+    {},
+    () => false,
+    { zapOut: async (_d, params) => closed.push(params), exit: async () => {} },
+  );
+  await runner.run(NOW);
+
+  assert.equal(closed.length, 1, "the diluted pnlPctChange was used -- the stop did not fire at -26.9%");
 });

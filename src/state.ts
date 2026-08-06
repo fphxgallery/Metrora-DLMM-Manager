@@ -38,6 +38,20 @@ export interface PositionTriggers {
    * `pct`, and equally unsafe to read as dollars.
    */
   measure?: TriggerMeasure;
+  /**
+   * Which DEFINITION of that unit, since `pct` has had two.
+   *
+   * Up to v1.11.3, `pct` was the indexer's `pnlPctChange` — diluted by
+   * cumulative deposits and unusable as a stop. From v1.11.4 it is PnL over
+   * capital committed. Same name, different number: on KIO the two read -2.6%
+   * and -26.9% at the same instant, so a `-3` threshold written under the old
+   * definition is nowhere near the position it describes under the new one.
+   *
+   * The unit alone therefore cannot say whether a stored threshold is safe, and
+   * a `pct` stamp written by v1.11.3 has to be rejected exactly like an unstamped
+   * one. Unset means pre-v1.11.4 and is always stale.
+   */
+  measureRev?: number;
   /** Consecutive readings past a threshold so far. */
   streak: number;
   /** Which threshold the streak belongs to; a flip to the other side resets it. */

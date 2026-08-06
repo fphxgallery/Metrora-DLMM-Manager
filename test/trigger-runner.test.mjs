@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { TriggerRunner, MAX_REFUSALS } from "../dist/triggers.js";
+import { TriggerRunner, MAX_REFUSALS, MEASURE_REV } from "../dist/triggers.js";
 import { Store } from "../dist/state.js";
 
 // What the runner does once a threshold has actually fired: whether it closes
@@ -50,7 +50,7 @@ function harness({ conf = cfg(), readings = [], triggers = { on: true }, zapThro
   });
   // `measure` matches conf.triggerMeasure. Without it the position disarms on
   // the unit guard before the runner reaches anything this file is about.
-  store.setTriggers("POS1", { streak: 0, refusals: 0, measure: conf.triggerMeasure, ...triggers });
+  store.setTriggers("POS1", { streak: 0, refusals: 0, measure: conf.triggerMeasure, measureRev: MEASURE_REV, ...triggers });
 
   const sent = [];
   const alerts = [];
@@ -66,9 +66,21 @@ function harness({ conf = cfg(), readings = [], triggers = { on: true }, zapThro
       positionPnlSafe: async () => {
         const value = readings[Math.min(i, readings.length - 1)];
         i += 1;
+        // A $100 basis with nothing withdrawn, so the derived percentage equals
+        // pnlUsd and each reading below can be read at face value in either
+        // measure. pnlPctChange is still supplied and still deliberately wrong:
+        // nothing may read it any more.
         return value === undefined || value === null
           ? []
-          : [{ positionAddress: "POS1", pnlPctChange: String(value), pnlUsd: String(value) }];
+          : [
+              {
+                positionAddress: "POS1",
+                pnlPctChange: String(value * 99),
+                pnlUsd: String(value),
+                allTimeDeposits: { total: { usd: "100" } },
+                allTimeWithdrawals: { total: { usd: "0" } },
+              },
+            ];
       },
     },
   };

@@ -1,8 +1,9 @@
-import type { Config, TriggerAction } from "./config.js";
+import type { Config, TriggerAction, TriggerMeasure } from "./config.js";
 import type { ManagedPosition, PositionTriggers } from "./state.js";
 import type { AppContext } from "./types.js";
 import { isDryRun } from "./types.js";
 import { INDEXER_SETTLE_MS } from "./sampler.js";
+import { pnlPctOfBasis } from "./metrics.js";
 import { exitPosition } from "./meteora/actions.js";
 import { executeZapOut, type ZapOutDeps } from "./meteora/zapout.js";
 
@@ -23,6 +24,23 @@ import { executeZapOut, type ZapOutDeps } from "./meteora/zapout.js";
 
 /** Consecutive refusals before a position disarms itself. */
 export const MAX_REFUSALS = 5;
+
+/**
+ * The current definition of the threshold units. Bump when the MEANING of a
+ * measure changes, not when a new one is added — every stored threshold whose
+ * stamp does not match is refused, and the operator has to re-enter it.
+ *
+ * 2 (v1.11.4): `pct` became PnL over capital committed. Before that it was the
+ * indexer's `pnlPctChange`, diluted by cumulative deposits.
+ */
+export const MEASURE_REV = 2;
+
+/** How a stamped measure is named to the operator, in the alert and the UI. */
+function describeMeasure(measure: TriggerMeasure | undefined, rev: number | undefined): string {
+  if (measure === undefined) return "an unrecorded unit (before v1.11.3)";
+  if (measure === "usd") return "$";
+  return rev === MEASURE_REV ? "% of capital committed" : "% as the indexer reported it (before v1.11.4)";
+}
 
 /** Why a check did not fire. Codes are for control flow; `reason` is for humans. */
 export type TriggerSkipCode =
@@ -129,17 +147,24 @@ export function evaluateTrigger(input: TriggerInput): TriggerVerdict {
   }
 
   // Before anything else about timing or freshness: are these numbers even
-  // denominated in the unit this config compares them against? A threshold is a
-  // bare number, so a change of TRIGGER_MEASURE reinterprets every stored one
-  // without touching it. `-3` under `pct` is a stop that may be years from
-  // firing; the same `-3` read as dollars can already be crossed. Checked ahead
-  // of `busy` and `too-new` on purpose — a position carrying thresholds in the
-  // wrong unit should be surfaced immediately, not on whichever tick the other
-  // guards happen to let through.
-  if (t.measure !== cfg.triggerMeasure) {
-    return hold("stale-measure", "thresholds were set in a different unit than the trigger now compares in", {
-      setIn: t.measure ?? "pct (before the unit was recorded)",
-      now: cfg.triggerMeasure,
+  // denominated in what this config compares them against? A threshold is a bare
+  // number, so a change of TRIGGER_MEASURE reinterprets every stored one without
+  // touching it — `-3` under `pct` is a stop that may be years from firing, and
+  // the same `-3` read as dollars can already be crossed.
+  //
+  // The revision is checked alongside the unit because `pct` itself has been
+  // redefined: v1.11.3 and earlier meant the indexer's diluted `pnlPctChange`,
+  // v1.11.4 means PnL over capital committed. A stamp of "pct" from the old
+  // definition is exactly as unsafe as no stamp at all, so the unit alone is not
+  // enough to establish that a threshold still means what it was written to.
+  //
+  // Checked ahead of `busy` and `too-new` on purpose — a position carrying
+  // thresholds in the wrong unit should be surfaced immediately, not on
+  // whichever tick the other guards happen to let through.
+  if (t.measure !== cfg.triggerMeasure || t.measureRev !== MEASURE_REV) {
+    return hold("stale-measure", "thresholds were not set against the measure the trigger now compares in", {
+      setIn: describeMeasure(t.measure, t.measureRev),
+      now: describeMeasure(cfg.triggerMeasure, MEASURE_REV),
       stopLoss: th.stopLoss,
       takeProfit: th.takeProfit,
     });
@@ -322,12 +347,12 @@ export class TriggerRunner {
    * failure this file exists to avoid. Disarming makes the gap visible in the
    * dashboard, and `disarmedReason` is already rendered there.
    *
-   * The thresholds are NOT converted. There is no sound conversion — the percent
-   * they were written in is a percent of cumulative deposits, a denominator that
-   * has no fixed relationship to the position's value and grows with every
-   * rebalance. Guessing a dollar figure from it would produce a stop that looks
-   * deliberate and is arbitrary. Re-entering two numbers is cheap; a wrong stop
-   * closing a position is not.
+   * The thresholds are NOT converted, and that holds for the v1.11.4 change of
+   * definition as much as for a change of unit. The old percent was a percent of
+   * cumulative deposits, a denominator with no fixed relationship to the capital
+   * in the position and growing with every rebalance — so there is no factor to
+   * multiply by. A converted threshold would look deliberate and be arbitrary.
+   * Re-entering two numbers is cheap; a wrong stop closing a position is not.
    *
    * Idempotent by way of the `on` flag: once disarmed the position is no longer
    * in `armed`, so this runs at most once per position per unit change and the
@@ -368,8 +393,18 @@ export class TriggerRunner {
     if (!pool) {
       pool = new Map();
       for (const pnl of await dataApi.positionPnlSafe(managed.poolAddress, wallet)) {
-        const value = cfg.triggerMeasure === "usd" ? Number(pnl.pnlUsd) : Number(pnl.pnlPctChange);
-        if (Number.isFinite(value)) pool.set(pnl.positionAddress, value);
+        // The percent is derived here rather than read off `pnlPctChange`: that
+        // field divides by CUMULATIVE deposits, so it is diluted by roughly
+        // `rebalanceCount + 1` and cannot be used as a stop. See pnlPctOfBasis.
+        const value =
+          cfg.triggerMeasure === "usd"
+            ? Number(pnl.pnlUsd)
+            : pnlPctOfBasis(
+                Number(pnl.pnlUsd),
+                Number(pnl.allTimeDeposits?.total?.usd),
+                Number(pnl.allTimeWithdrawals?.total?.usd),
+              );
+        if (value !== null && Number.isFinite(value)) pool.set(pnl.positionAddress, value);
       }
       byPool.set(managed.poolAddress, pool);
     }

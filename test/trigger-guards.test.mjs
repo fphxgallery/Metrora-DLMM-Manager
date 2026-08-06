@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { evaluateTrigger, thresholdsFor } from "../dist/triggers.js";
+import { evaluateTrigger, thresholdsFor, MEASURE_REV } from "../dist/triggers.js";
 import { INDEXER_SETTLE_MS } from "../dist/sampler.js";
 
 // Everything standing between an indexer reading and a closed position. Firing is
@@ -44,7 +44,7 @@ function position(over = {}) {
     // are set, and a mismatch disarms the position before any other guard runs —
     // so an unstamped fixture would make every test here pass for the wrong
     // reason. The mismatch itself is covered in trigger-measure-unit.test.mjs.
-    triggers: { on: true, streak: 0, refusals: 0, measure: "pct", ...(over.triggers ?? {}) },
+    triggers: { on: true, streak: 0, refusals: 0, measure: "pct", measureRev: MEASURE_REV, ...(over.triggers ?? {}) },
     ...over,
   };
 }
@@ -73,7 +73,7 @@ test("the -$43 indexer blip does not close a healthy position", () => {
     conf: cfg({ triggerMeasure: "usd", stopLoss: -20 }),
     // Spelled out rather than partial: `position()` spreads `over` last, so a
     // partial `triggers` replaces the defaults instead of merging with them.
-    managed: position({ triggers: { on: true, streak: 0, refusals: 0, measure: "usd" } }),
+    managed: position({ triggers: { on: true, streak: 0, refusals: 0, measure: "usd", measureRev: MEASURE_REV } }),
   });
 
   assert.equal(
@@ -168,7 +168,7 @@ test("armed with no thresholds anywhere does nothing", () => {
 });
 
 test("the check interval is respected", () => {
-  const managed = position({ triggers: { on: true, streak: 0, refusals: 0, measure: "pct", lastCheckAt: NOW - 30_000 } });
+  const managed = position({ triggers: { on: true, streak: 0, refusals: 0, measure: "pct", measureRev: MEASURE_REV, lastCheckAt: NOW - 30_000 } });
   const v = evaluateTrigger({ now: NOW, reading: -99, managed, cfg: cfg(), busy: false });
 
   assert.equal(v.fire, false);
@@ -205,7 +205,7 @@ test("a disabled side cannot fire, however far the reading goes", () => {
 });
 
 test("per-position thresholds win over the globals", () => {
-  const managed = position({ triggers: { on: true, streak: 0, refusals: 0, measure: "pct", stopLoss: -5, onFire: "exit" } });
+  const managed = position({ triggers: { on: true, streak: 0, refusals: 0, measure: "pct", measureRev: MEASURE_REV, stopLoss: -5, onFire: "exit" } });
   const v = evaluateTrigger({ now: NOW, reading: -6, managed, cfg: cfg({ triggerConfirmations: 1 }), busy: false });
 
   assert.equal(v.fire, true);

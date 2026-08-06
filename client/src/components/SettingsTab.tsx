@@ -228,12 +228,15 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
           <label className="field">
             <span>Measure</span>
             <select value={form.TRIGGER_MEASURE ?? "pct"} onChange={(e) => setForm({ ...form, TRIGGER_MEASURE: e.target.value })}>
-              <option value="pct">PnL % change</option>
+              <option value="pct">PnL % of capital</option>
               <option value="usd">PnL $</option>
             </select>
             <span className="faint" style={hint}>
               The indexer's PnL, which includes impermanent loss. A position earning fees well can still hit a stop
-              because the pair diverged — this is not "fees went negative".
+              because the pair diverged — this is not "fees went negative". The percentage is measured against capital
+              committed (deposits less withdrawals), not against Meteora's own PnL %, which divides by cumulative
+              deposits and so shrinks every time a position rebalances. Changing this disarms every armed position:
+              the thresholds are bare numbers and would mean something different.
             </span>
           </label>
           <label className="field">
