@@ -115,6 +115,18 @@ would open a second journal entry against the same position, and resume attribut
 change it caused, which cannot tell two entries apart — with two pending, neither is resumable and
 the funds stay stranded. Unfinished entries are shown at the top of the **METRICS** tab.
 
+**Closing the position is refused for the same window**, whether by the EXIT button, by ZAP OUT, or
+by a fired stop loss. Closing the account destroys the only thing resume can finish against: on the
+next pass the position lookup fails, the entry goes terminal with "check balances manually", and the
+withdrawn surplus stays in the wallet with nothing left tracking it.
+
+A swap leg that has already landed is recognised by its **recorded signature**, not by the phase it
+was interrupted at. The signature is written the moment the swap confirms, and the phase only moves
+on afterwards — so a crash or a redeploy in between leaves an entry that says "swap" about a swap
+that is already done. Resuming from the phase alone would run it a second time, and the wallet
+balance is no brake on that: for a wSOL leg it folds in native SOL above the reserve, so the second
+swap would sell the fee reserve. Such an entry resumes from the deposit instead.
+
 Where resume cannot establish a fact, it refuses rather than guesses. If a leg landed but the amount
 it moved was never journalled, the entry is marked failed with instructions to redeposit by hand,
 rather than falling back to "move everything in the wallet" — that balance is not a safe proxy for
@@ -404,6 +416,13 @@ Four things stop a swap before it is signed:
 deposit, the withdrawn tokens sit in the wallet as an ordinary balance — indistinguishable, on this
 screen, from spare change. Spending them is exactly how funds have been stranded in this project
 before, so while any journal entry is open the swap simply will not run.
+
+`CONFIRM` re-quotes rather than sending the plan the preview produced — a Jupiter quote goes stale in
+seconds — and every refusal above therefore runs **again on that second quote**, immediately before
+signing. The price-impact ceiling in particular has to: the quote the preview checked is not the
+quote that gets signed, and a swap at any impact still simulates cleanly and still satisfies its own
+minimum-received. What comes back after the send describes the quote that actually ran, not the
+preview it replaced.
 
 Selling a token that a managed position's pool uses is allowed, and says so. The position's own
 liquidity is untouched by a wallet swap; what the notice is really about is that the rebalancer
