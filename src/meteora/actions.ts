@@ -280,12 +280,35 @@ export async function claimFees(
  * Removes 100% of a position's liquidity, claims everything, and closes the
  * account so its rent comes back. Stops managing it too — otherwise the engine
  * would keep polling an address that no longer exists.
+ *
+ * Refuses while a journal entry is pending for this position, for the same
+ * reason a manual rebalance and a zap out both do. An unresolved entry means
+ * some of this position's funds are already out of the pool and sitting in the
+ * wallet mid path-B. Closing the account destroys the only thing resume can
+ * finish against: on the next pass `getPosition` throws, the entry goes terminal
+ * with "check balances manually", and the withdrawn surplus stays in the wallet
+ * with nothing left tracking it.
+ *
+ * Guarded here rather than in the route because this is the choke point every
+ * caller shares — the EXIT button, a fired stop loss, and zap out's own close
+ * leg all arrive through this function.
  */
 export async function exitPosition(
   deps: ActionDeps,
   params: { poolAddress: string; positionPk: string },
 ): Promise<SendResult[]> {
   const { client, sender, store, log } = deps;
+
+  const unfinished = store.pendingJournal().find((j) => j.positionPk === params.positionPk);
+  if (unfinished) {
+    throw new Error(
+      `unfinished rebalance ${unfinished.id} is pending at phase "${unfinished.phase}" — some of this ` +
+        "position's funds are in the wallet mid-flight, and closing the position now would leave them " +
+        "there with nothing able to redeposit them. The engine retries it automatically about every " +
+        "2 minutes (watch /api/journal).",
+    );
+  }
+
   const wallet = client.requireWallet();
   await client.assertSolFunded();
 
