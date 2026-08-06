@@ -6,7 +6,6 @@ import { join } from "node:path";
 import Fastify from "fastify";
 
 import { evaluateTrigger, TriggerRunner, MEASURE_REV } from "../dist/triggers.js";
-import { pnlPctOfBasis, pnlPctOf, MIN_PNL_BASIS_USD } from "../dist/metrics.js";
 import { Store } from "../dist/state.js";
 import { registerPositionRoutes } from "../dist/routes/positions.js";
 import { loadConfig } from "../dist/config.js";
@@ -354,9 +353,13 @@ test("the disarm names the old definition rather than just the unit", async () =
   await runner.run(NOW);
 
   const why = store.position("POS1").triggers.disarmedReason;
-  assert.match(why, /before v1\.11\.4/, "an operator reading this must be able to tell the two percents apart");
-  assert.match(why, /capital committed/, "and know which one is now in force");
-  assert.doesNotMatch(why, /in pct but triggers now compare in pct/, "the message must not contradict itself");
+  assert.match(why, /never recorded/, "an unprovable stamp must be described as one, not named");
+  assert.match(why, /Meteora/, "and the operator must be told which definition is now in force");
+  assert.doesNotMatch(
+    why,
+    /set in % as Meteora reports it but triggers now compare in % as Meteora reports it/,
+    "the message must not contradict itself -- the v1.11.4 wording bug",
+  );
 });
 
 test("the route stamps the current revision, not just the unit", async () => {
@@ -371,52 +374,17 @@ test("the route stamps the current revision, not just the unit", async () => {
   await f.close();
 });
 
+
 // --------------------------------------------------------- the percentage itself
 
-test("the percentage divides by capital committed, not by cumulative deposits", () => {
-  // KIO's live figures. The indexer reported -2.599% against $922.22 of
-  // cumulative deposits; against the $89.12 actually committed it is -26.9%.
-  const pct = pnlPctOfBasis(-23.97, 922.22, 833.10);
-  assert.ok(Math.abs(pct - -26.9) < 0.1, `expected about -26.9%, got ${pct}`);
-});
-
-test("rebalances cancel out of the denominator exactly", () => {
-  // One rebalance withdraws the whole position and puts it back, adding the same
-  // amount to both sides. The percentage must not move.
-  const before = pnlPctOfBasis(-10, 100, 0);
-  const after = pnlPctOfBasis(-10, 100 + 90, 0 + 90);
-  assert.equal(after, before, "the measure decayed as the position churned -- the original bug");
-
-  // And it must still hold after fourteen of them, which is where KIO was.
-  let dep = 100;
-  let wd = 0;
-  for (let i = 0; i < 14; i++) {
-    dep += 90;
-    wd += 90;
-  }
-  assert.equal(pnlPctOfBasis(-10, dep, wd), before);
-});
-
-test("a position whose withdrawals have caught up with its deposits reads null", () => {
-  // No capital at risk to express a return on, and the percentage would swing on
-  // rounding. Null is "no reading", the one state that never fires.
-  assert.equal(pnlPctOfBasis(-10, 100, 100), null);
-  assert.equal(pnlPctOfBasis(-10, 100, 101), null, "a negative basis must not flip the sign of the reading");
-  assert.equal(pnlPctOfBasis(-10, 100, 100 - MIN_PNL_BASIS_USD / 2), null, "a basis under the floor still reads null");
-  assert.ok(pnlPctOfBasis(-10, 100, 100 - MIN_PNL_BASIS_USD) !== null, "exactly at the floor is usable");
-});
-
-test("a non-numeric field from the indexer reads null rather than NaN", () => {
-  assert.equal(pnlPctOfBasis(NaN, 100, 0), null);
-  assert.equal(pnlPctOfBasis(-10, Number("nope"), 0), null);
-  assert.equal(pnlPctOfBasis(-10, 100, Number(undefined)), null);
-});
-
-test("the trigger reads the derived percentage, never the indexer's", async () => {
-  // pnlPctChange is supplied and is comfortably inside the thresholds; the
-  // derived figure is past the stop. Only the derived one may be acted on.
-  const store = new Store(mkdtempSync(join(tmpdir(), "dlmm-derived-")));
-  const p = position({ measure: "pct", measureRev: MEASURE_REV, stopLoss: -20, takeProfit: 50 });
+test("the trigger reads Meteora's percentage, matching the card and the gauge", async () => {
+  // v1.11.7, by explicit operator decision: one number across the card, the
+  // gauge, the alert and the trigger. The cost is written on `triggerMeasure` in
+  // config.ts -- pnlPctChange divides by CUMULATIVE deposits, so this threshold
+  // is diluted by roughly rebalanceCount + 1 and weakens as the position churns.
+  // KIO is the worked example: 27% down on capital, reporting -2.6%.
+  const store = new Store(mkdtempSync(join(tmpdir(), "dlmm-meteora-pct-")));
+  const p = position({ measure: "pct", measureRev: MEASURE_REV, stopLoss: -2, takeProfit: 50 });
   store.upsertPosition({ ...p, triggers: undefined });
   store.setTriggers("POS1", p.triggers);
 
@@ -446,24 +414,60 @@ test("the trigger reads the derived percentage, never the indexer's", async () =
   );
   await runner.run(NOW);
 
-  assert.equal(closed.length, 1, "the diluted pnlPctChange was used -- the stop did not fire at -26.9%");
+  assert.equal(closed.length, 1, "-2.599 did not cross a -2 stop -- the trigger is not reading pnlPctChange");
 });
 
-test("pnlPctOf reads an indexer row and gives the same answer as pnlPctOfBasis", () => {
-  // One function, so a display and a trigger cannot drift apart again.
-  const row = {
-    pnlUsd: "-23.97",
-    pnlPctChange: "-2.599",
-    allTimeDeposits: { total: { usd: "922.22" } },
-    allTimeWithdrawals: { total: { usd: "833.10" } },
-  };
+test("the diluted figure is what fires, so a -3 stop does NOT fire at -2.599", async () => {
+  // The other half of the same fact, and the one that costs money: measured
+  // against capital this position is 26.9% down, which any -3 stop should catch.
+  // It does not, and that is the accepted trade rather than a defect.
+  const store = new Store(mkdtempSync(join(tmpdir(), "dlmm-meteora-pct2-")));
+  const p = position({ measure: "pct", measureRev: MEASURE_REV, stopLoss: -3, takeProfit: 50 });
+  store.upsertPosition({ ...p, triggers: undefined });
+  store.setTriggers("POS1", p.triggers);
 
-  assert.equal(pnlPctOf(row), pnlPctOfBasis(-23.97, 922.22, 833.1));
-  assert.ok(Math.abs(pnlPctOf(row) - -26.9) < 0.1, `expected about -26.9%, got ${pnlPctOf(row)}`);
+  const closed = [];
+  const runner = new TriggerRunner(
+    {
+      cfg: cfg({ triggerMeasure: "pct" }),
+      store,
+      log: { info() {}, debug() {}, warn() {}, error() {} },
+      notifier: { notify() {} },
+      client: { wallet: () => ({ publicKey: { toBase58: () => "WALLET" } }) },
+      dataApi: {
+        positionPnlSafe: async () => [
+          {
+            positionAddress: "POS1",
+            pnlUsd: "-23.97",
+            pnlPctChange: "-2.599",
+            allTimeDeposits: { total: { usd: "922.22" } },
+            allTimeWithdrawals: { total: { usd: "833.10" } },
+          },
+        ],
+      },
+    },
+    {},
+    () => false,
+    { zapOut: async (_d, params) => closed.push(params), exit: async () => {} },
+  );
+  await runner.run(NOW);
+
+  assert.deepEqual(closed, [], "this is KIO -- if it fires, the measure is no longer Meteora's");
 });
 
-test("pnlPctOf reads null from a row missing the deposit totals", () => {
-  // An older or truncated response must not silently become a percentage.
-  assert.equal(pnlPctOf({ pnlUsd: "-5" }), null);
-  assert.equal(pnlPctOf({ pnlUsd: "-5", allTimeDeposits: { total: {} } }), null);
+test("a v1.11.6 pct stamp is refused, because pct changed meaning again", () => {
+  // Thresholds entered against "% of capital" would be read against a figure
+  // three to ten times smaller. Same class of hazard as the v1.11.4 switch.
+  const v = evaluateTrigger({
+    now: NOW,
+    reading: -2.599,
+    managed: position({ measure: "pct", measureRev: 2 }),
+    cfg: cfg({ triggerMeasure: "pct" }),
+    busy: false,
+  });
+
+  assert.equal(v.fire, false);
+  assert.equal(v.code, "stale-measure");
+  assert.match(String(v.detail.setIn), /capital committed/);
+  assert.match(String(v.detail.now), /Meteora/);
 });

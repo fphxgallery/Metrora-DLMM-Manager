@@ -92,19 +92,12 @@ export interface PositionView {
   pnl: {
     pnlUsd: number;
     /**
-     * The indexer's own percentage, passed through verbatim.
+     * The indexer's own percentage, passed through verbatim — and from v1.11.7
+     * the same figure the trigger acts on, so the card and the gauge agree.
      *
-     * DELIBERATELY not the figure the trigger acts on. This field exists so the
-     * dashboard reads the same as Meteora's portfolio page, which is what it is
-     * cross-checked against; `pnlPctOf` is what a stop loss is measured with,
-     * and the trigger gauge shows that instead.
-     *
-     * The two therefore disagree, by design, and disagree more the more a
-     * position has rebalanced — this one divides by CUMULATIVE deposits. On
-     * STONK after two rebalances they read -0.10% and -0.34%. Do not "reconcile"
-     * them: the whole of v1.11.4 is that a stop cannot be measured with this
-     * number, and the whole of v1.11.6 is that the operator wants the card to
-     * match Meteora anyway.
+     * It divides by CUMULATIVE deposits, so it is diluted by roughly
+     * `rebalanceCount + 1`. That matters far more for a threshold than for a
+     * display; the warning on `triggerMeasure` in config.ts has the numbers.
      */
     pnlPctChange: number;
     allTimeFeesUsd: number;

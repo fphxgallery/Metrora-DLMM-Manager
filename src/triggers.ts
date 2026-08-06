@@ -3,7 +3,6 @@ import type { ManagedPosition, PositionTriggers } from "./state.js";
 import type { AppContext } from "./types.js";
 import { isDryRun } from "./types.js";
 import { INDEXER_SETTLE_MS } from "./sampler.js";
-import { pnlPctOf } from "./metrics.js";
 import { exitPosition } from "./meteora/actions.js";
 import { executeZapOut, type ZapOutDeps } from "./meteora/zapout.js";
 
@@ -30,16 +29,22 @@ export const MAX_REFUSALS = 5;
  * measure changes, not when a new one is added — every stored threshold whose
  * stamp does not match is refused, and the operator has to re-enter it.
  *
- * 2 (v1.11.4): `pct` became PnL over capital committed. Before that it was the
- * indexer's `pnlPctChange`, diluted by cumulative deposits.
+ * 2 (v1.11.4): `pct` became PnL over capital committed.
+ * 3 (v1.11.7): `pct` is Meteora's `pnlPctChange` again, by operator decision —
+ *   one number across the card, the gauge, the alert and the trigger. Read the
+ *   warning on `triggerMeasure` in config.ts before touching this: the figure is
+ *   diluted by roughly `rebalanceCount + 1`, so a threshold weakens every time
+ *   the position rebalances. That is understood and chosen, not overlooked.
  */
-export const MEASURE_REV = 2;
+export const MEASURE_REV = 3;
 
 /** How a stamped measure is named to the operator, in the alert and the UI. */
 function describeMeasure(measure: TriggerMeasure | undefined, rev: number | undefined): string {
   if (measure === undefined) return "an unrecorded unit (before v1.11.3)";
   if (measure === "usd") return "$";
-  return rev === MEASURE_REV ? "% of capital committed" : "% as the indexer reported it (before v1.11.4)";
+  if (rev === 3) return "% as Meteora reports it";
+  if (rev === 2) return "% of capital committed (v1.11.4 to v1.11.6)";
+  return "% against a definition that was never recorded (before v1.11.4)";
 }
 
 /** Why a check did not fire. Codes are for control flow; `reason` is for humans. */
@@ -393,14 +398,13 @@ export class TriggerRunner {
     if (!pool) {
       pool = new Map();
       for (const pnl of await dataApi.positionPnlSafe(managed.poolAddress, wallet)) {
-        // The percent is derived here rather than read off `pnlPctChange`: that
-        // field divides by CUMULATIVE deposits, so it is diluted by roughly
-        // `rebalanceCount + 1` and cannot be used as a stop. See pnlPctOfBasis.
-        const value =
-          cfg.triggerMeasure === "usd"
-            ? Number(pnl.pnlUsd)
-            : pnlPctOf(pnl);
-        if (value !== null && Number.isFinite(value)) pool.set(pnl.positionAddress, value);
+        // Meteora's own figure, so the trigger, the gauge, the card and the
+        // alert all read the same number. It divides by CUMULATIVE deposits and
+        // is therefore diluted by roughly `rebalanceCount + 1` — a deliberate
+        // trade, documented on `triggerMeasure` in config.ts. `usd` is the
+        // measure with no denominator to dilute.
+        const value = cfg.triggerMeasure === "usd" ? Number(pnl.pnlUsd) : Number(pnl.pnlPctChange);
+        if (Number.isFinite(value)) pool.set(pnl.positionAddress, value);
       }
       byPool.set(managed.poolAddress, pool);
     }

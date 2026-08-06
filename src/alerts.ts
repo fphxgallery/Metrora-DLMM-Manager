@@ -25,9 +25,10 @@ import { escapeHtml } from "./notify.js";
 export interface RebalanceSnapshot {
   pnlUsd: number | null;
   /**
-   * The indexer's own percentage, matching the position card and Meteora's
-   * portfolio page. NOT the figure a stop loss is measured with — see
-   * `pnlPctOf` and the note on PositionView.pnl.
+   * The indexer's own percentage, matching the position card, Meteora's
+   * portfolio page and — from v1.11.7 — the trigger itself. One number
+   * everywhere. See the warning on `triggerMeasure` in config.ts for what that
+   * costs a stop loss.
    */
   pnlPctChange: number | null;
   lifetimeFeesUsd: number | null;

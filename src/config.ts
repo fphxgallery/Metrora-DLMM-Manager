@@ -240,16 +240,26 @@ export function loadConfig(): Config {
     zapOutTo: str("ZAP_OUT_TO", "y") as Config["zapOutTo"],
 
     triggersArmed: bool("TRIGGERS_ARMED", false),
-    // `pct` here is OUR percentage, not the indexer's. `pnlPctChange` divides by
-    // CUMULATIVE deposits — a path-B rebalance withdraws and redeposits the whole
-    // position, so every rebalance adds one position-notional to the denominator
-    // and the figure decays toward zero regardless of what the position does.
-    // Measured live, the dilution was exactly `rebalanceCount + 1`: KIO, 27% down
-    // on its capital, reported -2.6% after 14 rebalances and sat under a -3% stop
-    // that could never fire. v1.11.3 defaulted to `usd` to sidestep that;
-    // v1.11.4 fixes the percentage itself instead, dividing by capital committed
-    // (deposits less withdrawals), which rebalances cancel out of exactly. See
-    // pnlPctOfBasis in metrics.ts.
+    // `pct` is Meteora's `pnlPctChange`, so the trigger, the gauge, the card and
+    // the Telegram alert all show one number and the dashboard can be read beside
+    // Meteora's own portfolio page.
+    //
+    // KNOW WHAT THIS COSTS BEFORE CHANGING ANYTHING HERE. `pnlPctChange` divides
+    // by CUMULATIVE deposits, and a path-B rebalance withdraws and redeposits the
+    // whole position — so every rebalance adds another position-notional to the
+    // denominator and the figure decays toward zero no matter what the position
+    // does. Measured live, the dilution was exactly `rebalanceCount + 1`:
+    //
+    //   KIO-SOL, 14 rebalances, 27% down on its capital -> reported -2.6%,
+    //   and its -3% stop never fired.
+    //
+    // A `pct` threshold therefore weakens every time a position rebalances, and a
+    // churning position is effectively unprotected. v1.11.4 fixed this by
+    // dividing by capital committed; v1.11.7 reverted to Meteora's figure as an
+    // explicit operator decision, taken with those numbers in front of them.
+    //
+    // `usd` is the measure with no denominator to dilute, and is the one to use
+    // for a stop that must hold on a position that rebalances often.
     triggerMeasure: str("TRIGGER_MEASURE", "pct") as TriggerMeasure,
     stopLoss: numOpt("STOP_LOSS"),
     takeProfit: numOpt("TAKE_PROFIT"),
