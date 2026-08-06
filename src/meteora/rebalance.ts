@@ -1123,7 +1123,36 @@ export async function resumeJournal(
       // can be recorded rather than thrown away.
       const resumeResults: SendResult[] = [];
 
-      if (entry.phase === "withdraw" || entry.phase === "swap") {
+      /**
+       * The swap leg is already done, and the phase does not say so.
+       *
+       * `runSwapLeg` journals the swap's SIGNATURE the moment it confirms, and
+       * only then does `runWithSwap` move the phase to "deposit" — with an RPC
+       * round trip, the cost measurement and a disk write in between. A crash or
+       * a redeploy anywhere in that window leaves `phase: "swap"` on a swap that
+       * has already landed on chain.
+       *
+       * Resuming from the phase alone re-runs it. `min(intended, available)` is
+       * no protection: the swapped side has been drained, but for a wSOL leg
+       * `tokenBalance` folds native SOL above MIN_SOL_BALANCE back in, so
+       * `available` is very nearly the operator's whole fee reserve and the
+       * second swap sells it. That is precisely the double-swap `runSwapLeg`'s
+       * re-quote loop refuses to risk.
+       *
+       * A signature is positive proof and outranks the phase, exactly as it does
+       * for the withdraw leg in `legLanded` — sigs are written only after a send
+       * returns, and a swap that threw never reaches that write. So an entry
+       * carrying one resumes as a DEPOSIT, whatever its phase says.
+       */
+      const swapLanded = Boolean(entry.swap?.sig);
+      if (swapLanded && entry.phase !== "deposit") {
+        log.warn(
+          { journalId: entry.id, phase: entry.phase, sig: entry.swap?.sig },
+          "resume: the swap leg already landed — resuming from the deposit, not swapping again",
+        );
+      }
+
+      if ((entry.phase === "withdraw" || entry.phase === "swap") && !swapLanded) {
         const fromMint = new PublicKey(inMint);
         const fromProgram = fromMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
         const available = await client.tokenBalance(fromMint, fromProgram);
@@ -1163,7 +1192,7 @@ export async function resumeJournal(
         resumeResults.push(
           ...(await depositProceeds(deps, entry, planWithSwapFrom(plan, entry), swapResult.received)),
         );
-      } else if (entry.phase === "deposit") {
+      } else if (entry.phase === "deposit" || swapLanded) {
         const toMint = new PublicKey(outMint);
         const toProgram = toMint.equals(pool.tokenX.publicKey) ? pool.tokenX.owner : pool.tokenY.owner;
         const available = await client.tokenBalance(toMint, toProgram);
@@ -1185,6 +1214,10 @@ export async function resumeJournal(
           );
           continue;
         }
+        // Record where this entry has actually got to, so a failure below leaves
+        // the journal saying "deposit" rather than a "swap" phase that has been
+        // untrue since the signature was written.
+        if (entry.phase !== "deposit") store.updateJournal(entry.id, { phase: "deposit" });
         const amount = BN.min(intended, available);
         resumeResults.push(...(await depositProceeds(deps, entry, planWithSwapFrom(plan, entry), amount)));
       }
