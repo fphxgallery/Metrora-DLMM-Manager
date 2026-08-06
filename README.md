@@ -515,6 +515,13 @@ rounding.
 
 `usd` remains available and needs no denominator.
 
+**One function, one number.** `pnlPctOf` is the only way a percentage is taken out of the indexer's
+response, and the position card, the trigger gauge and the Telegram alert all call it. They did not,
+briefly: v1.11.4 moved the trigger onto the derived figure and left every *display* reading
+`pnlPctChange`, so the same position showed −1.34% on its card and −3.35% on its own trigger gauge —
+and the larger, more prominent number was the diluted one. The API field is called `pnlPct` rather
+than `pnlPctChange` so the next thing wired up cannot mistake it for a passthrough.
+
 ### Changing the measure disarms every armed position
 
 A threshold is a bare number: `-3` means −3% under `pct` and −$3 under `usd`, so switching silently

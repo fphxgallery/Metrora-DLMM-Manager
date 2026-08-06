@@ -6,7 +6,7 @@ import { join } from "node:path";
 import Fastify from "fastify";
 
 import { evaluateTrigger, TriggerRunner, MEASURE_REV } from "../dist/triggers.js";
-import { pnlPctOfBasis, MIN_PNL_BASIS_USD } from "../dist/metrics.js";
+import { pnlPctOfBasis, pnlPctOf, MIN_PNL_BASIS_USD } from "../dist/metrics.js";
 import { Store } from "../dist/state.js";
 import { registerPositionRoutes } from "../dist/routes/positions.js";
 import { loadConfig } from "../dist/config.js";
@@ -447,4 +447,23 @@ test("the trigger reads the derived percentage, never the indexer's", async () =
   await runner.run(NOW);
 
   assert.equal(closed.length, 1, "the diluted pnlPctChange was used -- the stop did not fire at -26.9%");
+});
+
+test("pnlPctOf reads an indexer row and gives the same answer as pnlPctOfBasis", () => {
+  // One function, so a display and a trigger cannot drift apart again.
+  const row = {
+    pnlUsd: "-23.97",
+    pnlPctChange: "-2.599",
+    allTimeDeposits: { total: { usd: "922.22" } },
+    allTimeWithdrawals: { total: { usd: "833.10" } },
+  };
+
+  assert.equal(pnlPctOf(row), pnlPctOfBasis(-23.97, 922.22, 833.1));
+  assert.ok(Math.abs(pnlPctOf(row) - -26.9) < 0.1, `expected about -26.9%, got ${pnlPctOf(row)}`);
+});
+
+test("pnlPctOf reads null from a row missing the deposit totals", () => {
+  // An older or truncated response must not silently become a percentage.
+  assert.equal(pnlPctOf({ pnlUsd: "-5" }), null);
+  assert.equal(pnlPctOf({ pnlUsd: "-5", allTimeDeposits: { total: {} } }), null);
 });

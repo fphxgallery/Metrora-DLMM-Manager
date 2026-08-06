@@ -12,6 +12,7 @@ import { WalletPanel } from "./WalletPanel.tsx";
 export interface TriggerView {
   on: boolean;
   measure: "pct" | "usd";
+  measureCurrent: boolean;
   stopLoss: number | null;
   takeProfit: number | null;
   onFire: string;
@@ -65,7 +66,7 @@ export interface PositionView {
     positionPctPer24h: number | null;
     poolPctPer24h: number | null;
   };
-  pnl: { pnlUsd: number; pnlPctChange: number; allTimeFeesUsd: number } | null;
+  pnl: { pnlUsd: number; pnlPct: number | null; allTimeFeesUsd: number } | null;
 }
 
 export interface PositionsResponse {
@@ -511,7 +512,7 @@ function PositionCard({
           v={p.pnl ? fmtUsd(p.pnl.pnlUsd) : "—"}
           cls={p.pnl ? (p.pnl.pnlUsd >= 0 ? "good" : "bad") : undefined}
         >
-          {p.pnl ? `${fmtPct(p.pnl.pnlPctChange)} · lifetime ${fmtUsd(p.pnl.allTimeFeesUsd)}` : "not indexed yet"}
+          {p.pnl ? `${fmtPct(p.pnl.pnlPct)} · lifetime ${fmtUsd(p.pnl.allTimeFeesUsd)}` : "not indexed yet"}
         </Fact>
         {/*
           The accrual RATE, not the token split the old tile showed. Both are
@@ -821,10 +822,19 @@ function TriggersPanel({
         <Confirmations streak={triggers.streak} of={triggers.confirmations} />
       </div>
 
+      {/* The reason states its own cause: repeated refusals and a changed measure
+          both land here, and naming only the first made the other read as a lie. */}
       {triggers.disarmedReason && (
         <div className="msg err" style={{ marginTop: 10 }}>
-          Disarmed after repeated refusals — the position is still open and no longer protected. Last reason:{" "}
-          {triggers.disarmedReason}
+          Disarmed — the position is still open and no longer protected. {triggers.disarmedReason}
+        </div>
+      )}
+
+      {triggers.on && !triggers.measureCurrent && (
+        <div className="msg warn" style={{ marginTop: 10 }}>
+          These thresholds were not set against the measure now in force, so they would mean something different
+          than when they were entered. They will not be acted on, and this position disarms itself on its next
+          check. Re-enter the stop loss and take profit above to re-arm.
         </div>
       )}
 

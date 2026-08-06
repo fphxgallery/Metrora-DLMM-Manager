@@ -7,7 +7,8 @@ import type { DataApi, DataApiPool, PositionPnL } from "./datapi.js";
 import type { MeteoraClient } from "./client.js";
 import { DLMM, type DlmmPool, type PositionData } from "./sdk.js";
 import { priceOfBin, rangeStatus, toUi, valuePosition } from "./pricing.js";
-import { positionFeeTvlPct, sinceOpenFeeRate } from "../metrics.js";
+import { pnlPctOf, positionFeeTvlPct, sinceOpenFeeRate } from "../metrics.js";
+import { MEASURE_REV } from "../triggers.js";
 
 /**
  * How far the lifetime average may diverge from the indexer's rate before it is
@@ -66,6 +67,13 @@ export interface PositionView {
     triggers: {
       on: boolean;
       measure: "pct" | "usd";
+      /**
+       * Whether this position's stored thresholds were stamped against the
+       * measure now in force. False means the trigger will disarm it on the next
+       * check — surfaced so the dashboard can say so before that happens rather
+       * than only afterwards, via `disarmedReason`.
+       */
+      measureCurrent: boolean;
       /** Effective values; null means that side is disabled. */
       stopLoss: number | null;
       takeProfit: number | null;
@@ -83,7 +91,19 @@ export interface PositionView {
 
   pnl: {
     pnlUsd: number;
-    pnlPctChange: number;
+    /**
+     * PnL as a percent of capital committed — OUR figure, not the indexer's.
+     *
+     * Named `pnlPct` rather than `pnlPctChange` on purpose. It used to carry
+     * `pnlPctChange` verbatim, and when v1.11.4 moved the trigger onto the
+     * derived percentage this field was missed, so the card and the trigger
+     * gauge showed different numbers for the same position. The name no longer
+     * matches the indexer's, so the next person to wire something up cannot
+     * assume it is a passthrough. See pnlPctOf.
+     *
+     * Null when the position has no capital left to express a return on.
+     */
+    pnlPct: number | null;
     allTimeFeesUsd: number;
   } | null;
 
@@ -264,7 +284,7 @@ function buildView(args: {
     pnl: pnl
       ? {
           pnlUsd: Number(pnl.pnlUsd),
-          pnlPctChange: Number(pnl.pnlPctChange),
+          pnlPct: pnlPctOf(pnl),
           allTimeFeesUsd: Number(pnl.allTimeFees?.total?.usd ?? 0),
         }
       : null,
@@ -302,6 +322,7 @@ function triggerView(cfg: Config, managed: ManagedPosition) {
   return {
     on: t?.on ?? false,
     measure: cfg.triggerMeasure,
+    measureCurrent: t?.measure === cfg.triggerMeasure && t?.measureRev === MEASURE_REV,
     stopLoss: stopLoss ?? null,
     takeProfit: takeProfit ?? null,
     onFire: t?.onFire ?? cfg.triggerOnFire,

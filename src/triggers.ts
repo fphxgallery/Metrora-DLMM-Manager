@@ -3,7 +3,7 @@ import type { ManagedPosition, PositionTriggers } from "./state.js";
 import type { AppContext } from "./types.js";
 import { isDryRun } from "./types.js";
 import { INDEXER_SETTLE_MS } from "./sampler.js";
-import { pnlPctOfBasis } from "./metrics.js";
+import { pnlPctOf } from "./metrics.js";
 import { exitPosition } from "./meteora/actions.js";
 import { executeZapOut, type ZapOutDeps } from "./meteora/zapout.js";
 
@@ -399,11 +399,7 @@ export class TriggerRunner {
         const value =
           cfg.triggerMeasure === "usd"
             ? Number(pnl.pnlUsd)
-            : pnlPctOfBasis(
-                Number(pnl.pnlUsd),
-                Number(pnl.allTimeDeposits?.total?.usd),
-                Number(pnl.allTimeWithdrawals?.total?.usd),
-              );
+            : pnlPctOf(pnl);
         if (value !== null && Number.isFinite(value)) pool.set(pnl.positionAddress, value);
       }
       byPool.set(managed.poolAddress, pool);

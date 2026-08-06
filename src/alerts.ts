@@ -3,7 +3,7 @@ import type { MeteoraClient } from "./meteora/client.js";
 import type { Logger } from "./logger.js";
 import type { ManagedPosition } from "./state.js";
 import type { RebalancePlan } from "./meteora/rebalance.js";
-import { positionFeeTvlPct } from "./metrics.js";
+import { pnlPctOf, positionFeeTvlPct } from "./metrics.js";
 import { escapeHtml } from "./notify.js";
 
 /**
@@ -24,7 +24,8 @@ import { escapeHtml } from "./notify.js";
 
 export interface RebalanceSnapshot {
   pnlUsd: number | null;
-  pnlPctChange: number | null;
+  /** Percent of capital committed — see pnlPctOf, NOT the indexer's field. */
+  pnlPct: number | null;
   lifetimeFeesUsd: number | null;
   /** Unclaimed at snapshot time — i.e. what this rebalance collects on the way through. */
   claimedFeesUsd: number | null;
@@ -56,7 +57,7 @@ export async function snapshotBeforeRebalance(
 ): Promise<RebalanceSnapshot> {
   const base: RebalanceSnapshot = {
     pnlUsd: null,
-    pnlPctChange: null,
+    pnlPct: null,
     lifetimeFeesUsd: null,
     claimedFeesUsd: plan.unclaimedFeesUsd,
     feePerDayUsd: null,
@@ -80,7 +81,7 @@ export async function snapshotBeforeRebalance(
   return {
     ...base,
     pnlUsd: pnl ? numOrNull(pnl.pnlUsd) : null,
-    pnlPctChange: pnl ? numOrNull(pnl.pnlPctChange) : null,
+    pnlPct: pnl ? pnlPctOf(pnl) : null,
     lifetimeFeesUsd: pnl ? numOrNull(pnl.allTimeFees?.total?.usd) : null,
     positionFeeTvlPct: rate,
     poolFeeTvlPct: meta?.fee_tvl_ratio?.["24h"] ?? null,
@@ -122,9 +123,9 @@ export function rebalanceAlertHtml(args: {
   rows.push("─".repeat(29));
 
   rows.push(
-    snapshot.pnlUsd === null
+    snapshot.pnlUsd == null
       ? row("PnL", "not indexed yet")
-      : row("PnL", usd(snapshot.pnlUsd), snapshot.pnlPctChange === null ? "" : pct(snapshot.pnlPctChange)),
+      : row("PnL", usd(snapshot.pnlUsd), snapshot.pnlPct == null ? "" : pct(snapshot.pnlPct)),
   );
   rows.push(
     row(

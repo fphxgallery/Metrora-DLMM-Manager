@@ -222,6 +222,30 @@ export function pnlPctOfBasis(pnlUsd: number, depositsUsd: number, withdrawalsUs
 }
 
 /**
+ * The same percentage, read straight off an indexer PnL row.
+ *
+ * Exists so there is exactly ONE way to get a percentage out of this response.
+ * v1.11.4 derived it for the trigger and left the dashboard and the Telegram
+ * alert reading `pnlPctChange` directly, so the same position displayed -1.34%
+ * in the card and -3.35% on its own trigger gauge — and the bigger, more
+ * prominent number was the diluted one the release existed to stop using.
+ *
+ * Structurally typed rather than importing PositionPnL, to keep metrics.ts free
+ * of a dependency on the data-api module.
+ */
+export function pnlPctOf(pnl: {
+  pnlUsd: string | number;
+  allTimeDeposits?: { total?: { usd?: string | number } };
+  allTimeWithdrawals?: { total?: { usd?: string | number } };
+}): number | null {
+  return pnlPctOfBasis(
+    Number(pnl.pnlUsd),
+    Number(pnl.allTimeDeposits?.total?.usd),
+    Number(pnl.allTimeWithdrawals?.total?.usd),
+  );
+}
+
+/**
  * How much of the cost ledger actually has its swap cost measured.
  *
  * Reported so the dashboard can say "this figure is still incomplete" rather
