@@ -118,3 +118,32 @@ export function sinceOpenFeeRate(
 export function lamportsOf(rs: RebalanceRecord[]): number {
   return rs.reduce((a, r) => a + r.costLamports + r.rentLamports, 0);
 }
+
+/**
+ * What the swap legs cost, in USD.
+ *
+ * Kept separate from `lamportsOf` because it is not a lamport figure and does
+ * not convert at the SOL price — it is a loss taken in the pool's own tokens at
+ * the moment of the swap, already priced then.
+ *
+ * This is usually the LARGER of the two. Network fees for a path-B rebalance run
+ * around a cent; the AMM fees on a four-figure swap run to tens of cents. A
+ * ledger counting only lamports reports a rebalance as nearly free.
+ *
+ * Records written before the measurement existed carry no figure and contribute
+ * zero — they are undercounted, not wrong, and `swapCostCoverage` says how many.
+ */
+export function swapCostUsdOf(rs: RebalanceRecord[]): number {
+  return rs.reduce((a, r) => a + (r.swapCostUsd ?? 0), 0);
+}
+
+/**
+ * How much of the cost ledger actually has its swap cost measured.
+ *
+ * Reported so the dashboard can say "this figure is still incomplete" rather
+ * than quietly presenting a mixed ledger as a total.
+ */
+export function swapCostCoverage(rs: RebalanceRecord[]): { measured: number; swaps: number } {
+  const swaps = rs.filter((r) => r.path === "B");
+  return { measured: swaps.filter((r) => r.swapCostUsd != null).length, swaps: swaps.length };
+}

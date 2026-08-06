@@ -116,6 +116,10 @@ export interface JournalEntry {
     inAmount: string;
     outAmount?: string;
     sig?: string;
+    /** Realized execution cost in bps of notional — see RealizedSwapCost. */
+    costBps?: number;
+    /** The same cost in the pool's quote token. */
+    costInY?: number;
   };
 }
 
@@ -131,8 +135,18 @@ export interface RebalanceRecord {
   costLamports: number;
   /** Rent paid for newly initialized bin arrays, in lamports. */
   rentLamports: number;
-  /** Realized swap cost (quoted-out minus received-out) in bps, when a swap ran. */
+  /**
+   * Realized swap cost in bps of the swapped notional, when a swap ran.
+   *
+   * Measured against the pool's own mid price, so it includes the AMM fees of
+   * every hop the route took — not just slippage against the quote. Absent on
+   * records written before this was measured, and on path A, which never swaps.
+   */
   swapCostBps?: number;
+  /** That cost in USD, so the ledger can add it to the lamport fees. */
+  swapCostUsd?: number;
+  /** The swapped notional in USD, for context on the bps figure. */
+  swapValueUsd?: number;
   feesClaimedX?: string;
   feesClaimedY?: string;
   sigs: string[];

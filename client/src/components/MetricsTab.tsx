@@ -11,6 +11,10 @@ interface RebalanceRecord {
   toRange: [number, number];
   costLamports: number;
   rentLamports: number;
+  /** Realized swap cost in USD. Absent on path A, and on records written before
+      it was measured — those show the fees alone rather than a made-up total. */
+  swapCostUsd?: number;
+  swapCostBps?: number;
   sigs: string[];
 }
 
@@ -25,6 +29,9 @@ interface Metrics {
   minGapMin: number | null;
   /** The cooldown the measured gaps were subject to — the yardstick for "short". */
   cooldownMin: number;
+  /** Path-B rebalances whose swap cost is measured, out of how many there are. */
+  swapCostMeasured: number;
+  swapCount: number;
   recent: RebalanceRecord[];
   perPosition: {
     positionPk: string;
@@ -159,6 +166,19 @@ export function MetricsTab() {
 
       <div className="panel">
         <h2>Recent rebalances</h2>
+        {/*
+          Said out loud rather than left to be inferred. Before the swap cost was
+          measured, a path-B rebalance recorded only its network fees — about a
+          cent — while the swap itself cost tens of cents in AMM fees. Those old
+          records cannot be repaired retroactively: the number that would settle
+          them was computed at execution and never stored.
+        */}
+        {m.swapCostMeasured < m.swapCount && (
+          <div className="msg warn">
+            {m.swapCount - m.swapCostMeasured} of {m.swapCount} swap rebalances predate realized cost measurement and
+            count only their network fees. Totals below are a floor, not a total.
+          </div>
+        )}
         <div className="table-wrap">
           <table>
             <thead>
@@ -187,7 +207,26 @@ export function MetricsTab() {
                   <td>
                     {r.fromRange[0]}…{r.fromRange[1]} → {r.toRange[0]}…{r.toRange[1]}
                   </td>
-                  <td>{fmtUsd(((r.costLamports + r.rentLamports) / 1e9) * m.solPriceUsd)}</td>
+                  {/*
+                    Fees and swap cost, added. They are shown together because
+                    that is what the rebalance cost — but the swap share is
+                    called out, since it is usually the larger of the two and
+                    responds to entirely different settings.
+                  */}
+                  <td>
+                    {fmtUsd(((r.costLamports + r.rentLamports) / 1e9) * m.solPriceUsd + (r.swapCostUsd ?? 0))}
+                    {r.swapCostUsd != null && (
+                      <span className="faint" style={{ marginLeft: 6, letterSpacing: 0, textTransform: "none" }}>
+                        {fmtUsd(r.swapCostUsd)} swap
+                        {r.swapCostBps != null ? ` · ${r.swapCostBps.toFixed(1)}bps` : ""}
+                      </span>
+                    )}
+                    {r.swapCostUsd == null && r.path === "B" && (
+                      <span className="faint" style={{ marginLeft: 6, letterSpacing: 0, textTransform: "none" }}>
+                        fees only
+                      </span>
+                    )}
+                  </td>
                   <td className="faint">{r.sigs.length}</td>
                 </tr>
               ))}

@@ -17,7 +17,7 @@ import {
   saveKeypairFile,
 } from "./wallet/keystore.js";
 import type { RebalanceDeps } from "./meteora/rebalance.js";
-import { cooldownFloor, lamportsOf, partitionRebalances } from "./metrics.js";
+import { cooldownFloor, lamportsOf, partitionRebalances, swapCostCoverage, swapCostUsdOf } from "./metrics.js";
 import { aggregateByTs, downsample } from "./history.js";
 
 /**
@@ -168,10 +168,17 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
     const { managed: rebalances, retired } = partitionRebalances(allRebalances, positions);
 
     const costLamports = lamportsOf(rebalances);
-    const costUsd = (costLamports / 1_000_000_000) * solPriceUsd;
+    const feeCostUsd = (costLamports / 1_000_000_000) * solPriceUsd;
+    // The swap legs' realized cost, which for a path-B rebalance dwarfs the
+    // network fees. Reported alongside rather than folded away, because the two
+    // respond to completely different levers: fees to PRIORITY_FEE, swap cost to
+    // how often a rebalance is worth doing at all.
+    const swapCostUsd = swapCostUsdOf(rebalances);
+    const costUsd = feeCostUsd + swapCostUsd;
+    const swapCoverage = swapCostCoverage(rebalances);
     // Spending on positions since closed. Kept out of every ratio above, but
     // surfaced so retiring a position cannot quietly erase what it cost.
-    const retiredCostUsd = (lamportsOf(retired) / 1_000_000_000) * solPriceUsd;
+    const retiredCostUsd = (lamportsOf(retired) / 1_000_000_000) * solPriceUsd + swapCostUsdOf(retired);
 
     // Fee income comes from the indexer's per-position PnL, which counts fees
     // already claimed as well as those still sitting in the position.
@@ -207,6 +214,14 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
       pathA: rebalances.filter((r) => r.path === "A").length,
       pathB: rebalances.filter((r) => r.path === "B").length,
       costLamports,
+      feeCostUsd,
+      swapCostUsd,
+      /**
+       * How many path-B rebalances have their swap cost measured. Anything short
+       * of all of them means costUsd is a floor, not a total.
+       */
+      swapCostMeasured: swapCoverage.measured,
+      swapCount: swapCoverage.swaps,
       costUsd,
       retiredCount: retired.length,
       retiredCostUsd,
@@ -269,22 +284,32 @@ export async function buildServer(ctx: AppContext, rebalanceDeps: RebalanceDeps)
 
     const { managed: rebalances } = partitionRebalances(store.rebalances(), positions);
     const ordered = [...rebalances].sort((a, b) => a.ts - b.ts);
+    /**
+     * A rebalance's total cost in USD: network fees and rent, converted at the
+     * current SOL price, PLUS the swap leg's realized cost, which was already
+     * priced in USD when it was measured.
+     *
+     * The two are not interchangeable and only one of them converts — folding
+     * the swap cost into a lamport figure would re-price a loss that was taken
+     * in the pool's own tokens weeks ago at today's SOL price.
+     */
+    const usdOf = (r: (typeof ordered)[number]) =>
+      ((r.costLamports + r.rentLamports) / 1_000_000_000) * solPriceUsd + (r.swapCostUsd ?? 0);
+
     let running = 0;
     const cost: { ts: number; usd: number }[] = [];
     for (const r of ordered) {
-      running += (r.costLamports + r.rentLamports) / 1_000_000_000;
-      if (r.ts >= from) cost.push({ ts: r.ts, usd: running * solPriceUsd });
+      running += usdOf(r);
+      if (r.ts >= from) cost.push({ ts: r.ts, usd: running });
     }
     // Anchor the step at the window's left edge, otherwise a cost curve whose
     // rebalances all predate the window would start at zero and understate it.
-    const spentBefore = ordered
-      .filter((r) => r.ts < from)
-      .reduce((a, r) => a + (r.costLamports + r.rentLamports) / 1_000_000_000, 0);
+    const spentBefore = ordered.filter((r) => r.ts < from).reduce((a, r) => a + usdOf(r), 0);
     // The left anchor sits at the window edge, except for ALL, where there is no
     // edge — there it belongs at the first rebalance we know about.
     const firstEventTs = ordered[0]?.ts;
-    cost.unshift({ ts: Number.isFinite(from) ? from : (firstEventTs ?? now), usd: spentBefore * solPriceUsd });
-    cost.push({ ts: now, usd: running * solPriceUsd });
+    cost.unshift({ ts: Number.isFinite(from) ? from : (firstEventTs ?? now), usd: spentBefore });
+    cost.push({ ts: now, usd: running });
 
     const earliest = ctx.samples.earliest();
     /**

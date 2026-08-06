@@ -111,7 +111,14 @@ export function rebalanceAlertHtml(args: {
   if (plan.swap) {
     rows.push(row("swap", `~$${plan.swap.valueUsd.toFixed(2)} ${plan.swap.fromSymbol}→${plan.swap.toSymbol}`));
   }
-  rows.push(row("cost", `$${plan.estCostUsd.toFixed(2)}`));
+  /**
+   * Labelled as an estimate, because that is what it is: a pre-flight guess made
+   * before anything was sent, whose swap term assumes ONE hop at the pool's own
+   * fee tier. A rebalance read back off chain went across three unrelated pools,
+   * so the model does not describe the trade it is pricing. The realized figure
+   * lands in the METRICS ledger once the swap has actually run.
+   */
+  rows.push(row("est. cost", `~$${plan.estCostUsd.toFixed(2)}`));
   rows.push("─".repeat(29));
 
   rows.push(

@@ -274,6 +274,10 @@ export async function executeRebalance(deps: RebalanceDeps, plan: RebalancePlan)
       toRange: plan.targetRange,
       costLamports: results.reduce((a, r) => a + (r.feeLamports ?? 0), 0),
       rentLamports: plan.estCost.rentLamports,
+      // Read back off the journal rather than passed down through three call
+      // layers: the swap leg already persists it there, and the resume path
+      // reaches the same place by a different route.
+      ...swapCostFields(store.journalEntry(entry.id), plan),
       sigs: sigsOf(results),
     });
     log.info({ journalId: entry.id, sigs: sigsOf(results) }, "rebalance complete");
@@ -631,6 +635,93 @@ export async function ensureSideBuffer(
 }
 
 /**
+ * The realized-cost fields for a rebalance record, from the journal entry the
+ * swap leg wrote them onto.
+ *
+ * `costInY` is the cost in the pool's QUOTE token; converting it to USD needs
+ * the quote token's price, which the plan already carries as the ratio between
+ * the position's value in Y and in USD. Without a plan (the resume path) the
+ * bps figure is still recorded — it is the comparable number — and the USD
+ * conversion is simply left out rather than guessed at.
+ */
+function swapCostFields(
+  entry: JournalEntry | undefined,
+  plan: RebalancePlan | undefined,
+): { swapCostBps?: number; swapCostUsd?: number; swapValueUsd?: number } {
+  const swap = entry?.swap;
+  if (swap?.costBps == null) return {};
+
+  const out: { swapCostBps?: number; swapCostUsd?: number; swapValueUsd?: number } = { swapCostBps: swap.costBps };
+  if (plan?.swap && plan.valueInY > 0 && plan.valueUsd > 0) {
+    const usdPerY = plan.valueUsd / plan.valueInY;
+    if (swap.costInY != null) out.swapCostUsd = swap.costInY * usdPerY;
+    out.swapValueUsd = plan.swap.valueUsd;
+  }
+  return out;
+}
+
+/** What a swap actually cost, measured after the fact. */
+export interface RealizedSwapCost {
+  /**
+   * Total execution cost in bps of the swapped notional, measured against the
+   * POOL'S OWN mid price: AMM fees on every hop, price impact, routing spread
+   * and slippage, all of it.
+   *
+   * Not "quoted-out minus received-out". A Jupiter quote is already net of the
+   * pool fees it will pay, so measuring against the quote reports the slippage
+   * and hides the fee — which is the larger number. An on-chain reading of one
+   * rebalance made this concrete: the route went JitoSOL->SOL->USDC->ONyc across
+   * three unrelated pools, and the Whirlpool hop alone charged 1.00 bps that
+   * appeared in no quote comparison and in no ledger.
+   *
+   * The pool's mid is the right reference because it is the price the position
+   * itself is valued at. Swapping out and back at mid would be free; every
+   * basis point away from it is what re-centring actually cost.
+   *
+   * Negative is legitimate and is NOT clamped: routing through other venues can
+   * beat the pool's own price, and hiding that would bias the ledger upward.
+   */
+  costBps: number;
+  /** Cost in the quote token, so it can be priced without re-deriving the notional. */
+  costInY: number;
+  /** Slippage against the quote alone, for comparison in the log. */
+  vsQuoteBps: number;
+}
+
+/**
+ * Measures what the swap cost against the pool's own mid price.
+ *
+ * Everything here is arithmetic on numbers already in hand — no extra RPC, no
+ * second quote — so it cannot fail the rebalance it is measuring. Returns null
+ * only when the maths would be meaningless.
+ */
+export function measureSwapCost(args: {
+  poolPrice: number;
+  fromIsX: boolean;
+  amountInUi: number;
+  receivedUi: number;
+  quotedOutUi: number;
+}): RealizedSwapCost | null {
+  const { poolPrice, fromIsX, amountInUi, receivedUi, quotedOutUi } = args;
+  if (!(poolPrice > 0) || !(amountInUi > 0) || !Number.isFinite(receivedUi)) return null;
+
+  // What the same tokens would have become at the pool's mid price.
+  const expectedOut = fromIsX ? amountInUi * poolPrice : amountInUi / poolPrice;
+  if (!(expectedOut > 0)) return null;
+
+  const shortfall = expectedOut - receivedUi;
+  // Both sides expressed in the QUOTE token, so a cost is comparable across
+  // rebalances regardless of which direction the swap ran.
+  const costInY = fromIsX ? shortfall : shortfall * poolPrice;
+
+  return {
+    costBps: (shortfall / expectedOut) * 10_000,
+    costInY,
+    vsQuoteBps: quotedOutUi > 0 ? ((quotedOutUi - receivedUi) / quotedOutUi) * 10_000 : 0,
+  };
+}
+
+/**
  * Phase 2 of path B. Returns what actually landed in the wallet.
  *
  * Exported for tests: the retry count and what it refuses to retry are the risk here.
@@ -640,7 +731,7 @@ export async function runSwapLeg(
   entry: JournalEntry,
   plan: RebalancePlan,
   amountIn: BN,
-): Promise<{ result: SendResult; received: BN }> {
+): Promise<{ result: SendResult; received: BN; cost: RealizedSwapCost | null }> {
   const { cfg, client, sender, swapper, store, log } = deps;
   const wallet = client.requireWallet();
   const pool = await client.getPool(plan.poolAddress);
@@ -700,12 +791,58 @@ export async function runSwapLeg(
         },
       });
 
-      if (!result.signature) return { result, received: new BN(0) };
+      if (!result.signature) return { result, received: new BN(0), cost: null };
 
       // Measure rather than trust the quote — the realised output is what matters
       // to the deposit that follows.
       const after = await client.tokenBalance(toMint, toProgram);
-      return { result, received: BN.max(new BN(0), after.sub(before)) };
+      const received = BN.max(new BN(0), after.sub(before));
+
+      /**
+       * What that swap actually cost. Wrapped because it is bookkeeping: the
+       * funds have already moved, the deposit still has to run, and a bad
+       * number here must never be the reason a rebalance strands money.
+       */
+      let cost: RealizedSwapCost | null = null;
+      try {
+        const fromIsX = new PublicKey(plan.swap!.fromMint).equals(pool.tokenX.publicKey);
+        const fromDecimals = fromIsX ? pool.tokenX.mint.decimals : pool.tokenY.mint.decimals;
+        const toDecimals = fromIsX ? pool.tokenY.mint.decimals : pool.tokenX.mint.decimals;
+        cost = measureSwapCost({
+          poolPrice: priceOfBin(pool, pool.lbPair.activeId),
+          fromIsX,
+          amountInUi: toUi(amountIn, fromDecimals),
+          receivedUi: toUi(received, toDecimals),
+          quotedOutUi: toUi(quote.outAmount, toDecimals),
+        });
+        if (cost) {
+          store.updateJournal(entry.id, {
+            swap: {
+              inMint: plan.swap!.fromMint,
+              outMint: plan.swap!.toMint,
+              inAmount: amountIn.toString(),
+              outAmount: received.toString(),
+              sig: result.signature,
+              costBps: cost.costBps,
+              costInY: cost.costInY,
+            },
+          });
+          log.info(
+            {
+              journalId: entry.id,
+              route: quote.route,
+              costBps: Number(cost.costBps.toFixed(2)),
+              vsQuoteBps: Number(cost.vsQuoteBps.toFixed(2)),
+              quotedImpactBps: quote.priceImpactBps,
+            },
+            "swap cost measured",
+          );
+        }
+      } catch (e) {
+        log.warn({ journalId: entry.id, err: e instanceof Error ? e.message : String(e) }, "swap cost not measured");
+      }
+
+      return { result, received, cost };
     } catch (e) {
       lastErr = e;
       if (attempt >= SWAP_QUOTE_ATTEMPTS || !isRequotableSwapFailure(e)) throw e;
@@ -1152,6 +1289,7 @@ async function finishResumed(
     path: entry.path,
     fromRange: [entry.sourceMinBinId ?? entry.targetMinBinId, entry.sourceMaxBinId ?? entry.targetMaxBinId],
     toRange: [entry.targetMinBinId, entry.targetMaxBinId],
+    ...swapCostFields(entry, undefined),
     costLamports,
     rentLamports: entry.rentLamports ?? 0,
     sigs: allSigs,

@@ -513,6 +513,43 @@ show, the heading falls back to the question.)
 `ALL` is a timeframe rather than a separate lifetime panel, deliberately: the same figures read the
 same way, in one place, so a total can never disagree with the chart beside it.
 
+### What "cost" counts
+
+A rebalance costs two quite different things, and for a long time this app recorded only one of them.
+
+**Network fees and rent** are the obvious part — signature fees, priority fee, and the sunk rent of any
+new bin array. They are read back from the confirmed transactions, so they are exact. For a path-B
+rebalance they come to roughly a cent.
+
+**The swap leg's execution cost** is the larger part, and it used to be invisible. Path B sells the
+surplus side through Jupiter, and every pool the route crosses charges a fee. That is real money
+leaving the position, and it appeared in no transaction fee and in no ledger.
+
+It is now measured, per rebalance, against **the pool's own mid price**:
+
+```
+expectedOut = amountIn × poolMidPrice     (what the swap would have made at mid)
+costBps     = (expectedOut − received) / expectedOut × 10000
+```
+
+The mid is the right reference because it is the price the position itself is valued at. Swapping out
+and back at mid would be free; every basis point away from it is what re-centring actually cost. This
+deliberately is **not** "quoted-out minus received-out" — a Jupiter quote is already net of the fees it
+will pay, so measuring against it reports the slippage and hides the fee.
+
+Reading one rebalance off chain is what settled the design. A JitoSOL→ONyc swap routed
+`JitoSOL → SOL → USDC → ONyc` across three unrelated pools; the Whirlpool hop alone charged 1.00 bps
+(`lpFee 0.082259` + `protocolFee 0.012291` on 945.495354 USDC) that no quote comparison would have
+caught. The pre-flight estimate in the Telegram alert models a *single* hop at the managed pool's own
+fee tier, which is why that line is labelled `est. cost` and the ledger figure is the one to trust.
+
+A negative cost is recorded as negative, not clamped: routing elsewhere can beat the pool's own price,
+and hiding that would bias the ledger upward.
+
+Rebalances recorded before this existed cannot be repaired — the number was computed at execution and
+never stored — so METRICS says how many are unmeasured and treats the total as a floor rather than
+quietly presenting a mixed ledger as complete.
+
 Cost is drawn as a **step**, because it only moves when a rebalance lands — a smooth line would imply
 continuous spending and hide that the spend is lumpy. The legend names how many rebalances landed in
 the window; the chart itself is framed rather than marked with a tick per event, which got busy
