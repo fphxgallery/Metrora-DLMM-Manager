@@ -28,6 +28,7 @@ export const MAX_REFUSALS = 5;
 export type TriggerSkipCode =
   | "off"
   | "no-thresholds"
+  | "stale-measure"
   | "busy"
   | "too-new"
   | "settling"
@@ -125,6 +126,23 @@ export function evaluateTrigger(input: TriggerInput): TriggerVerdict {
   const th = thresholdsFor(cfg, t);
   if (th.stopLoss === undefined && th.takeProfit === undefined) {
     return hold("no-thresholds", "no stop loss or take profit is set");
+  }
+
+  // Before anything else about timing or freshness: are these numbers even
+  // denominated in the unit this config compares them against? A threshold is a
+  // bare number, so a change of TRIGGER_MEASURE reinterprets every stored one
+  // without touching it. `-3` under `pct` is a stop that may be years from
+  // firing; the same `-3` read as dollars can already be crossed. Checked ahead
+  // of `busy` and `too-new` on purpose — a position carrying thresholds in the
+  // wrong unit should be surfaced immediately, not on whichever tick the other
+  // guards happen to let through.
+  if (t.measure !== cfg.triggerMeasure) {
+    return hold("stale-measure", "thresholds were set in a different unit than the trigger now compares in", {
+      setIn: t.measure ?? "pct (before the unit was recorded)",
+      now: cfg.triggerMeasure,
+      stopLoss: th.stopLoss,
+      takeProfit: th.takeProfit,
+    });
   }
 
   // An unresolved rebalance means some of this position's funds are sitting in
@@ -262,6 +280,10 @@ export class TriggerRunner {
 
     // Everything that does not need a number, before paying for the number.
     const gate = evaluateTrigger({ now, reading: null, managed, cfg, busy });
+    if (!gate.fire && gate.code === "stale-measure") {
+      this.disarmStale(managed, gate.detail ?? {});
+      return;
+    }
     if (!gate.fire && gate.code !== "needs-reading") {
       this.persist(managed, gate);
       log.debug({ positionPk: managed.positionPk, reason: gate.reason, ...gate.detail }, "trigger skipped");
@@ -290,6 +312,42 @@ export class TriggerRunner {
     }
 
     await this.fire(managed, verdict, fired);
+  }
+
+  /**
+   * Disarms a position whose thresholds are in the wrong unit, once, loudly.
+   *
+   * Disarmed rather than held: a position left `on` that can never fire is a
+   * switch the UI shows as armed while it silently does nothing, which is the
+   * failure this file exists to avoid. Disarming makes the gap visible in the
+   * dashboard, and `disarmedReason` is already rendered there.
+   *
+   * The thresholds are NOT converted. There is no sound conversion — the percent
+   * they were written in is a percent of cumulative deposits, a denominator that
+   * has no fixed relationship to the position's value and grows with every
+   * rebalance. Guessing a dollar figure from it would produce a stop that looks
+   * deliberate and is arbitrary. Re-entering two numbers is cheap; a wrong stop
+   * closing a position is not.
+   *
+   * Idempotent by way of the `on` flag: once disarmed the position is no longer
+   * in `armed`, so this runs at most once per position per unit change and the
+   * notification cannot repeat on the check interval.
+   */
+  private disarmStale(managed: ManagedPosition, detail: Record<string, unknown>): void {
+    const { store, log, notifier } = this.ctx;
+    const name = managed.pairName ?? managed.positionPk.slice(0, 8);
+    const setIn = String(detail.setIn ?? "an earlier unit");
+    const now = String(detail.now ?? "");
+    const reason =
+      `thresholds were set in ${setIn} but triggers now compare in ${now} — the same numbers would mean ` +
+      "something different, so they were not acted on. Re-enter the stop loss and take profit to re-arm.";
+
+    store.setTriggers(managed.positionPk, { on: false, streak: 0, streakSide: undefined, disarmedReason: reason });
+    log.warn({ positionPk: managed.positionPk, ...detail }, "triggers disarmed — threshold unit changed");
+    notifier.notify(
+      `⚠️ Triggers on ${name} were DISARMED — thresholds were set in ${setIn}, triggers now compare in ${now}. ` +
+        "The position is still open and no longer protected. Re-enter its stop loss and take profit to re-arm.",
+    );
   }
 
   /** Writes back the confirmation streak a verdict leaves behind. */

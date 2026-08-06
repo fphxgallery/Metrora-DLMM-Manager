@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import type { StrategyTypeName, TriggerAction } from "./config.js";
+import type { StrategyTypeName, TriggerAction, TriggerMeasure } from "./config.js";
 
 /**
  * A position's stop loss / take profit state.
@@ -21,6 +21,23 @@ export interface PositionTriggers {
   stopLoss?: number;
   takeProfit?: number;
   onFire?: TriggerAction;
+  /**
+   * The unit the thresholds above were entered in, stamped when they were set.
+   *
+   * A threshold is a bare number: `-3` is -3% under `TRIGGER_MEASURE=pct` and
+   * -$3 under `usd`. Changing the global measure therefore silently reinterprets
+   * every stored threshold, and the reinterpretation is not conservative — on
+   * the live box at the moment of the 1.11.3 switch, `-3` meant "close at -3% of
+   * cumulative deposits" (unreachable) and would have become "close at -$3"
+   * (already crossed on three of four positions). Two of those closes would have
+   * been accidents, and closing is terminal: bin-array rent is never recovered.
+   *
+   * So the unit travels with the number. A mismatch against the running config
+   * disarms the position rather than acting on a threshold whose meaning changed
+   * underneath it. Unset means the thresholds predate this field — written under
+   * `pct`, and equally unsafe to read as dollars.
+   */
+  measure?: TriggerMeasure;
   /** Consecutive readings past a threshold so far. */
   streak: number;
   /** Which threshold the streak belongs to; a flip to the other side resets it. */

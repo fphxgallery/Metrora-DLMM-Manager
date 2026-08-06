@@ -173,7 +173,7 @@ would attach an absurd priority fee to every transaction).
 | `APE_AUTO_MANAGE` | `false` | Whether a position opened by APE is enrolled in auto-rebalancing straight away |
 | `ZAP_OUT_TO` | `y` | Which side ZAP OUT consolidates into — `y` (quote) or `x` (base). A side, not a named token |
 | `TRIGGERS_ARMED` | `false` | Whether a crossed stop loss / take profit actually closes the position. `false` still evaluates and alerts |
-| `TRIGGER_MEASURE` | `pct` | Whether the thresholds below are `pct` (PnL % change) or `usd` |
+| `TRIGGER_MEASURE` | `usd` | Whether the thresholds below are `usd` (PnL in dollars) or `pct`. **Do not use `pct` for a stop loss** — see below |
 | `STOP_LOSS` | unset | Close at or below this PnL. Must be negative; blank disables |
 | `TAKE_PROFIT` | unset | Close at or above this PnL. Must be positive; blank disables |
 | `TRIGGER_CONFIRMATIONS` | `3` | Consecutive readings past a threshold before anything closes — see below |
@@ -484,6 +484,38 @@ and there is no undo — reopening pays bin-array rent, and that rent is never r
 is not "fees went negative". A position earning fees perfectly well can hit one purely because the
 pair diverged, which is a real thing to want to stop out of, but it is worth knowing that is what the
 number means.
+
+### Why the measure is USD, and why `pct` cannot be a stop
+
+`TRIGGER_MEASURE=pct` reads the indexer's `pnlPctChange`, which is `pnlUsd / allTimeDeposits`. That
+denominator is **cumulative**: a path-B rebalance withdraws and redeposits the whole position, so
+every rebalance adds another position-notional to it. Measured across all four live positions on
+2026-08-06 the dilution was exactly `rebalanceCount + 1`:
+
+| pair | rebalances | value | cumulative deposits | pnlUsd | `pnlPctChange` | true % of basis |
+|---|---|---|---|---|---|---|
+| JitoSOL-ONyc | 20 | $2972.69 | $64,689.14 | −$26.48 | −0.041% | −0.9% |
+| CATE-SOL | 65 | $81.90 | $4,944.12 | +$9.67 | +0.196% | +11.8% |
+| Cupsey-SOL | 1 | $68.01 | $142.17 | −$5.62 | −3.954% | −7.7% |
+| KIO-SOL | 14 | $47.00 | $922.22 | −$25.89 | −2.807% | −35.5% |
+
+KIO was 35% down against a −3% stop that read −2.8% and could not fire. The stop gets weaker the more
+a position churns, so the position most in need of one is the least protected. Meteora's own UI shows
+this same percentage — it is a display there, and nothing acts on it.
+
+`pnlUsd` is the dollar figure from the same response and has no denominator to corrupt, so it is the
+default from v1.11.3. `pct` remains selectable for a position that never rebalances; do not use it
+for a stop loss on one that does.
+
+**Changing the measure disarms every position that was already armed.** A threshold is a bare number,
+so `-3` means −3% under `pct` and −$3 under `usd` — switching silently reinterprets every stored
+threshold, and not in a safe direction. At the v1.11.3 switch, three of four live positions were
+already past their thresholds when read as dollars, two of them by accident. So the unit is stamped
+alongside the numbers when they are set, a mismatch disarms the position instead of acting on it, and
+`disarmedReason` says so in the UI and over Telegram. The thresholds are left as they were and are
+never auto-converted: the percent they were written in is a percent of cumulative deposits, which has
+no fixed relationship to the position's value, so any conversion would look deliberate and be
+arbitrary. Re-enter the two numbers in dollars to re-arm.
 
 ### Why confirmations exist
 

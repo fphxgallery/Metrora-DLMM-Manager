@@ -48,7 +48,9 @@ function harness({ conf = cfg(), readings = [], triggers = { on: true }, zapThro
     pollsTotal: 0,
     pollsInRange: 0,
   });
-  store.setTriggers("POS1", { streak: 0, refusals: 0, ...triggers });
+  // `measure` matches conf.triggerMeasure. Without it the position disarms on
+  // the unit guard before the runner reaches anything this file is about.
+  store.setTriggers("POS1", { streak: 0, refusals: 0, measure: conf.triggerMeasure, ...triggers });
 
   const sent = [];
   const alerts = [];

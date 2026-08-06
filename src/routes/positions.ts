@@ -288,6 +288,11 @@ export function registerPositionRoutes(app: FastifyInstance, ctx: AppContext, re
       ...(body.stopLoss === undefined ? {} : { stopLoss: body.stopLoss === null ? undefined : stopLoss }),
       ...(body.takeProfit === undefined ? {} : { takeProfit: body.takeProfit === null ? undefined : takeProfit }),
       ...(body.onFire === undefined ? {} : { onFire: body.onFire === null ? undefined : (body.onFire as TriggerAction) }),
+      // The unit these numbers were typed in. Stamped on every edit, including
+      // one that only flips `on`, because arming is the point at which the user
+      // last looked at the thresholds and agreed with them — which is exactly
+      // the claim the trigger needs before it may act on them.
+      measure: cfg.triggerMeasure,
       // Any edit clears the bookkeeping. A streak counted against the OLD
       // threshold is not evidence about the new one, and a refusal count that
       // survived a change of target token would disarm a route that now works.

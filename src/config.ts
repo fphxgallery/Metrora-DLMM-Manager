@@ -240,7 +240,17 @@ export function loadConfig(): Config {
     zapOutTo: str("ZAP_OUT_TO", "y") as Config["zapOutTo"],
 
     triggersArmed: bool("TRIGGERS_ARMED", false),
-    triggerMeasure: str("TRIGGER_MEASURE", "pct") as TriggerMeasure,
+    // USD, not percent, because the indexer's percent cannot be used as a stop.
+    // `pnlPctChange` is `pnlUsd / allTimeDeposits`, and `allTimeDeposits` is
+    // CUMULATIVE — a path-B rebalance withdraws and redeposits the whole
+    // position, so every rebalance adds one position-notional to the
+    // denominator. Measured on the live box, the dilution is exactly
+    // `rebalanceCount + 1` on all four positions: KIO down 35% of its cost
+    // basis reported -2.8% after 14 rebalances, and sat under a -3% stop that
+    // could never fire. The stop gets weaker the more a position churns, so the
+    // position most in need of one is the least protected. `pnlUsd` is the same
+    // dollar figure Meteora's own UI prints and has no denominator to corrupt.
+    triggerMeasure: str("TRIGGER_MEASURE", "usd") as TriggerMeasure,
     stopLoss: numOpt("STOP_LOSS"),
     takeProfit: numOpt("TAKE_PROFIT"),
     // Three at the default two-minute cadence is roughly six minutes of
