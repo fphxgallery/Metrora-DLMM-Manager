@@ -114,6 +114,17 @@ export function rebalanceAlertHtml(args: {
   const now = args.now ?? Date.now();
   const rows: string[] = [];
 
+  /**
+   * What the position was worth going in.
+   *
+   * Above the divider with the other plan figures, not below it with the indexer's,
+   * because that is where it comes from: `valueUsd` is the position's own token
+   * amounts priced at plan time, computed on chain. It owes the Data API nothing,
+   * so it is the one figure here that cannot be wrong in the settle window — and it
+   * is the denominator `fee/TVL` and the `≈$/day` estimate are both ratios of.
+   */
+  rows.push(row("TVL", `$${plan.valueUsd.toFixed(2)}`));
+
   if (plan.swap) {
     rows.push(row("swap", `~$${plan.swap.valueUsd.toFixed(2)} ${plan.swap.fromSymbol}→${plan.swap.toSymbol}`));
   }

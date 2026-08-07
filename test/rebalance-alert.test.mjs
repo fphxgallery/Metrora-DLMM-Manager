@@ -67,6 +67,7 @@ function block(html) {
 test("every figure the position card shows is in the alert", () => {
   const rows = block(render()).join("\n");
 
+  assert.match(rows, /TVL\s+\$74\.73/);
   assert.match(rows, /PnL\s+-\$3\.31\s+-0\.37%/);
   assert.match(rows, /fees\s+\$0\.9418\s+≈\$62\.17\/day/);
   assert.match(rows, /fee\/TVL\s+86\.64%\s+pool 15\.48%/);
@@ -77,7 +78,7 @@ test("every figure the position card shows is in the alert", () => {
 test("the columns actually line up", () => {
   // The whole reason this variant needs parse_mode HTML is the monospace block.
   // If the values do not start at the same offset the block buys nothing.
-  const rows = block(render()).filter((r) => /^(swap|cost|PnL|fees|fee\/TVL|count|lifetime)/.test(r));
+  const rows = block(render()).filter((r) => /^(TVL|swap|cost|PnL|fees|fee\/TVL|count|lifetime)/.test(r));
 
   for (const r of rows) {
     assert.equal(r[8], " ", `label column not padded to 9 in "${r}"`);
@@ -138,6 +139,30 @@ test("the swap row appears only on path B", () => {
     render({}, { path: "B", swap: { fromSymbol: "CATE", toSymbol: "SOL", valueUsd: 31.4, fromMint: "", toMint: "", xWithdrawBps: 0, yWithdrawBps: 0 } }),
   );
   assert.ok(b.some((r) => /^swap\s+~\$31\.40 CATE→SOL/.test(r)));
+});
+
+test("TVL is read from the plan, so it survives an indexer that has nothing to say", () => {
+  // The point of sourcing it from `plan.valueUsd` rather than the snapshot: it is
+  // the position's own token amounts priced on chain at plan time. Every figure
+  // below the divider can go null in the settle window; this one cannot.
+  const rows = block(render({ pnlUsd: null, pnlPctChange: null, lifetimeFeesUsd: null, feePerDayUsd: null, positionFeeTvlPct: null, poolFeeTvlPct: null }));
+
+  assert.match(rows.join("\n"), /TVL\s+\$74\.73/);
+  assert.match(rows.join("\n"), /PnL\s+not indexed yet/, "the indexer really is dark in this case");
+});
+
+test("TVL sits above the divider, with the plan figures rather than the indexer's", () => {
+  // Placement is the decision, not decoration. Above the line means "measured on
+  // chain before we moved"; below means "what the Data API says". Putting it below
+  // would group it with figures that can be wrong for two minutes after a
+  // rebalance, and it is the denominator the fee/TVL row is a ratio of.
+  const rows = block(render());
+  const tvl = rows.findIndex((r) => r.startsWith("TVL"));
+  const divider = rows.findIndex((r) => r.startsWith("─"));
+
+  assert.ok(tvl >= 0, "the TVL row is missing");
+  assert.ok(divider > tvl, `TVL at ${tvl} must come before the divider at ${divider}`);
+  assert.equal(tvl, 0, "TVL leads the block: it is what the other figures are measured against");
 });
 
 test("an unindexed position says so rather than printing a zero", () => {
@@ -246,11 +271,10 @@ test("another position's PnL in the same pool is not picked up", async () => {
 });
 
 test("the alert reports the indexer's percentage, matching the position card", () => {
-  // Deliberately NOT the figure the stop loss is measured with. The card is
-  // cross-checked against Meteora's own portfolio page, so it and the alert both
-  // pass that number through; the trigger gauge shows % of capital instead, and
-  // "the trigger reads the derived percentage, never the indexer's" in
-  // trigger-measure-unit.test.mjs is what holds that side in place.
+  // The card is cross-checked against Meteora's own portfolio page, and since
+  // v1.11.7 the trigger reads this same field, so card, gauge and alert all show
+  // one number. "the trigger reads Meteora's percentage" in
+  // trigger-measure-unit.test.mjs holds the other side of that.
   return snapshotBeforeRebalance(
     snapDeps({
       pnl: {
