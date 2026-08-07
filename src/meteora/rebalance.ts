@@ -731,7 +731,10 @@ export async function runSwapLeg(
   entry: JournalEntry,
   plan: RebalancePlan,
   amountIn: BN,
-): Promise<{ result: SendResult; received: BN; cost: RealizedSwapCost | null }> {
+  // `received` is null when the swap landed but its output could not be read.
+  // Distinct from a zero, which means it was read and there was nothing there —
+  // the dry-run case, where nothing was sent at all.
+): Promise<{ result: SendResult; received: BN | null; cost: RealizedSwapCost | null }> {
   const { cfg, client, sender, swapper, store, log } = deps;
   const wallet = client.requireWallet();
   const pool = await client.getPool(plan.poolAddress);
@@ -793,53 +796,96 @@ export async function runSwapLeg(
 
       if (!result.signature) return { result, received: new BN(0), cost: null };
 
-      // Measure rather than trust the quote — the realised output is what matters
-      // to the deposit that follows.
-      const after = await client.tokenBalance(toMint, toProgram);
-      const received = BN.max(new BN(0), after.sub(before));
+      /**
+       * Measure rather than trust the quote — the realised output is what matters
+       * to the deposit that follows.
+       *
+       * Read from the transaction first. The balance difference is kept only as a
+       * fallback, and only when it is strictly POSITIVE: a zero or negative
+       * difference is the signature of a stale read, not of a swap that returned
+       * nothing, and clamping it to zero with `BN.max` made those two cases
+       * indistinguishable. That is what stranded 0.39 SOL on 2026-08-07 — the
+       * deposit was skipped and the entire input booked as a 100% loss, on a swap
+       * that had in fact delivered every lamport the quote promised.
+       *
+       * `null` when neither method could answer. Not zero.
+       */
+      const measured = await client.receivedInTx(result.signature, toMint, toProgram);
+      let received: BN | null = measured;
+      if (received === null) {
+        const after = await client.tokenBalance(toMint, toProgram);
+        const diff = after.sub(before);
+        received = diff.gtn(0) ? diff : null;
+        log.warn(
+          { journalId: entry.id, sig: result.signature, fellBackTo: received === null ? "nothing" : diff.toString() },
+          "swap output could not be read from the transaction",
+        );
+      }
 
       /**
        * What that swap actually cost. Wrapped because it is bookkeeping: the
        * funds have already moved, the deposit still has to run, and a bad
        * number here must never be the reason a rebalance strands money.
+       *
+       * Skipped entirely when the output is unknown. Costing an unmeasured swap
+       * means feeding a zero into the model, which reports a 100% loss and writes
+       * it to the ledger as fact — a $29 record that moved the dashboard's cost
+       * drag from 11% to 45% while the money sat safe in the wallet. An absent
+       * figure is recoverable; a confident wrong one is not.
        */
       let cost: RealizedSwapCost | null = null;
-      try {
-        const fromIsX = new PublicKey(plan.swap!.fromMint).equals(pool.tokenX.publicKey);
-        const fromDecimals = fromIsX ? pool.tokenX.mint.decimals : pool.tokenY.mint.decimals;
-        const toDecimals = fromIsX ? pool.tokenY.mint.decimals : pool.tokenX.mint.decimals;
-        cost = measureSwapCost({
-          poolPrice: priceOfBin(pool, pool.lbPair.activeId),
-          fromIsX,
-          amountInUi: toUi(amountIn, fromDecimals),
-          receivedUi: toUi(received, toDecimals),
-          quotedOutUi: toUi(quote.outAmount, toDecimals),
-        });
-        if (cost) {
-          store.updateJournal(entry.id, {
-            swap: {
-              inMint: plan.swap!.fromMint,
-              outMint: plan.swap!.toMint,
-              inAmount: amountIn.toString(),
-              outAmount: received.toString(),
-              sig: result.signature,
-              costBps: cost.costBps,
-              costInY: cost.costInY,
-            },
+      if (received === null) {
+        log.error(
+          { journalId: entry.id, sig: result.signature },
+          "swap landed but its output could not be measured — not costing it, and not depositing a guess",
+        );
+      } else {
+        const swapBase = {
+          inMint: plan.swap!.fromMint,
+          outMint: plan.swap!.toMint,
+          inAmount: amountIn.toString(),
+          outAmount: received.toString(),
+          sig: result.signature,
+        };
+        /**
+         * Journalled BEFORE the cost is worked out, and separately from it.
+         * Costing is bookkeeping and allowed to fail; the amount is what `resume`
+         * needs to finish the deposit. Writing them together meant a thrown cost
+         * calculation also lost the figure, and the resume path can only respond
+         * to a missing `outAmount` by giving up and telling the operator to
+         * re-deposit by hand.
+         */
+        store.updateJournal(entry.id, { swap: swapBase });
+
+        try {
+          const fromIsX = new PublicKey(plan.swap!.fromMint).equals(pool.tokenX.publicKey);
+          const fromDecimals = fromIsX ? pool.tokenX.mint.decimals : pool.tokenY.mint.decimals;
+          const toDecimals = fromIsX ? pool.tokenY.mint.decimals : pool.tokenX.mint.decimals;
+          cost = measureSwapCost({
+            poolPrice: priceOfBin(pool, pool.lbPair.activeId),
+            fromIsX,
+            amountInUi: toUi(amountIn, fromDecimals),
+            receivedUi: toUi(received, toDecimals),
+            quotedOutUi: toUi(quote.outAmount, toDecimals),
           });
-          log.info(
-            {
-              journalId: entry.id,
-              route: quote.route,
-              costBps: Number(cost.costBps.toFixed(2)),
-              vsQuoteBps: Number(cost.vsQuoteBps.toFixed(2)),
-              quotedImpactBps: quote.priceImpactBps,
-            },
-            "swap cost measured",
-          );
+          if (cost) {
+            store.updateJournal(entry.id, {
+              swap: { ...swapBase, costBps: cost.costBps, costInY: cost.costInY },
+            });
+            log.info(
+              {
+                journalId: entry.id,
+                route: quote.route,
+                costBps: Number(cost.costBps.toFixed(2)),
+                vsQuoteBps: Number(cost.vsQuoteBps.toFixed(2)),
+                quotedImpactBps: quote.priceImpactBps,
+              },
+              "swap cost measured",
+            );
+          }
+        } catch (e) {
+          log.warn({ journalId: entry.id, err: e instanceof Error ? e.message : String(e) }, "swap cost not measured");
         }
-      } catch (e) {
-        log.warn({ journalId: entry.id, err: e instanceof Error ? e.message : String(e) }, "swap cost not measured");
       }
 
       return { result, received, cost };
@@ -872,9 +918,31 @@ export async function depositProceeds(
   deps: RebalanceDeps,
   entry: JournalEntry,
   plan: RebalancePlan,
-  received: BN,
+  received: BN | null,
 ): Promise<SendResult[]> {
   const { client, sender, log } = deps;
+
+  /**
+   * Unknown is not zero, and must not be treated as one.
+   *
+   * Returning empty here marks the rebalance `done` and records it in the cost
+   * ledger, which is the right answer only if the swap genuinely produced
+   * nothing. When the output merely could not be read, the proceeds are sitting
+   * in the wallet and that same path abandons them silently — 0.39 SOL on
+   * 2026-08-07, reported as a completed rebalance.
+   *
+   * Throwing leaves the journal on `deposit` with the error attached, which is
+   * what `resume` reads. It will finish the deposit on the next tick from the
+   * journalled `outAmount`, or, failing that, mark the entry failed with the
+   * recovery instructions — loudly, either way.
+   */
+  if (received === null) {
+    throw new Error(
+      "the swap landed but its output could not be measured, so there is no safe amount to " +
+        "deposit — the proceeds are in the wallet and this rebalance is retried automatically",
+    );
+  }
+
   if (received.isZero()) {
     log.warn({ journalId: entry.id }, "swap produced nothing to deposit");
     return [];

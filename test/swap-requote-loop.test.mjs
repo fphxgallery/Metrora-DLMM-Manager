@@ -30,6 +30,11 @@ function harness({ sendResults, priceImpactBps = 0, maxSwapPriceImpactBps = 200 
         tokenY: { publicKey: new PublicKey(IN_MINT), owner: new PublicKey(IN_MINT) },
       }),
       tokenBalance: async () => balance,
+      // The primary measurement: what the landed transaction actually delivered.
+      // Balance differencing is only the fallback, and only when it comes out
+      // positive -- see "an unreadable transaction does not read as zero" in
+      // swap-output-measure.test.mjs.
+      receivedInTx: async () => (sends.length > 0 ? new BN(591_300_000) : null),
     },
     sender: {
       sendVersioned: async (_tx, label) => {

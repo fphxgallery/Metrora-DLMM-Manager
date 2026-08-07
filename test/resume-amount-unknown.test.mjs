@@ -88,6 +88,11 @@ function harness({ phase, swap }) {
       requireWallet: () => ({ publicKey: pk(USDC) }),
       getPool: async () => pool,
       tokenBalance: async (mint) => balances[mint.toBase58()] ?? new BN(0),
+      // The swap's output is read from the landed transaction now, not by
+      // differencing two balance reads -- a follow-up read served one slot behind
+      // returns the pre-swap figure, and the zero that falls out of that is
+      // indistinguishable from a swap that produced nothing.
+      receivedInTx: async () => new BN(60_000_000),
       invalidate: () => {},
     },
     dataApi: { pool: async () => null, solPriceUsd: async () => 150 },

@@ -22,6 +22,18 @@ import { DLMM, type DlmmPool } from "./sdk.js";
 /** How long a cached pool's on-chain state is considered fresh. */
 const POOL_STATE_TTL_MS = 5_000;
 
+/**
+ * How hard to look for a transaction that has just confirmed.
+ *
+ * Confirmation and queryability are not the same thing — the RPC node answering
+ * the lookup may still be catching up. Worth several seconds of patience, because
+ * the alternative to an answer here is stranding the swap proceeds.
+ */
+const TX_LOOKUP_ATTEMPTS = 5;
+const TX_LOOKUP_DELAY_MS = 1_000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 interface CachedPool {
   pool: DlmmPool;
   refreshedAt: number;
@@ -189,6 +201,77 @@ export class MeteoraClient {
       // rather than throwing, so the caller tops it up instead of giving up.
       return new BN(0);
     }
+  }
+
+  /**
+   * What a landed transaction actually delivered to this wallet, in raw base units.
+   *
+   * Differencing two balance reads either side of a send cannot answer this
+   * reliably. `sendVersioned` returns on confirmation, but the follow-up read is a
+   * separate RPC call that may be served by a node one slot behind, in which case
+   * it returns the PRE-swap balance and the difference comes out at zero. On
+   * 2026-08-07 that stranded 0.39 SOL: the swap delivered it, the read said
+   * nothing arrived, the deposit was skipped and the whole input was booked as a
+   * 100% swap loss. See `runSwapLeg`.
+   *
+   * The transaction's own `meta` has no such race. It is the ledger's record of
+   * what moved, fixed at the slot the transaction landed in, and it is what a
+   * block explorer shows.
+   *
+   * Returns null when the answer is UNKNOWN — transaction not visible yet, or the
+   * RPC gave a shape we cannot read. Null is not zero, and callers must not treat
+   * it as such: zero means the swap really produced nothing, null means we failed
+   * to find out, and only one of those is safe to act on.
+   */
+  async receivedInTx(signature: string, mint: PublicKey, tokenProgramId?: PublicKey): Promise<BN | null> {
+    const owner = this.wallet()?.publicKey;
+    if (!owner) return null;
+    const ownerStr = owner.toBase58();
+    const mintStr = mint.toBase58();
+
+    // A transaction is routinely not queryable for a moment after it confirms, so
+    // a single miss is expected rather than an error.
+    let tx = null;
+    for (let attempt = 1; attempt <= TX_LOOKUP_ATTEMPTS; attempt++) {
+      try {
+        tx = await this.connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 });
+      } catch {
+        tx = null;
+      }
+      if (tx?.meta) break;
+      if (attempt < TX_LOOKUP_ATTEMPTS) await sleep(TX_LOOKUP_DELAY_MS);
+    }
+    if (!tx?.meta || tx.meta.err) return null;
+
+    const sum = (rows: typeof tx.meta.preTokenBalances) =>
+      (rows ?? [])
+        .filter((b) => b.owner === ownerStr && b.mint === mintStr)
+        .reduce((a, b) => a.add(new BN(b.uiTokenAmount.amount)), new BN(0));
+    let delta = sum(tx.meta.postTokenBalances).sub(sum(tx.meta.preTokenBalances));
+
+    if (mint.equals(NATIVE_MINT)) {
+      /**
+       * A swap into SOL usually unwraps: the wSOL account is opened, filled and
+       * closed inside the one transaction, so BOTH its token balances are absent
+       * and the proceeds appear only as native lamports. Reading the token side
+       * alone reports zero on exactly the case that matters.
+       *
+       * The transaction fee is deliberately NOT added back. It really did leave
+       * the wallet, so the net figure is what can actually be deposited; adding it
+       * back would overstate the balance by the fee and risk a deposit that cannot
+       * settle. It costs the cost measurement a few thousand lamports of accuracy,
+       * in the conservative direction.
+       */
+      const keys = tx.transaction.message.accountKeys;
+      const i = keys.findIndex((k) => k.pubkey.toBase58() === ownerStr);
+      if (i < 0) return null;
+      const pre = tx.meta.preBalances[i];
+      const post = tx.meta.postBalances[i];
+      if (pre === undefined || post === undefined) return null;
+      delta = delta.add(new BN(post).sub(new BN(pre)));
+    }
+
+    return delta;
   }
 
   /**
