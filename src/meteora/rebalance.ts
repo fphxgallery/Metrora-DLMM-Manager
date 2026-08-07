@@ -384,64 +384,67 @@ async function runWithSwap(deps: RebalanceDeps, plan: RebalancePlan, entry: Jour
   return results;
 }
 
-/** One side of what the deposit half has to find from outside the position. */
-export interface SideShortfall {
-  /** What the deposit will debit, in UI units. */
-  deposited: number;
-  /** What the removal releases back, in UI units. */
-  withdrawn: number;
-  /** deposited - withdrawn, floored at zero: the part the wallet must supply. */
-  needed: number;
-  /** What the wallet's token account actually holds right now. */
-  ata: number;
-  covered: boolean;
+/** What a landed withdraw leg did to one of the wallet's token accounts. */
+export interface SideMovement {
+  /** Signed, in UI units. Positive: the leg paid the wallet. Negative: it took. */
+  delta: number;
+  /**
+   * How much the wallet had to SUPPLY, in UI units — a negative delta with its
+   * sign flipped, zero otherwise. This is the shortfall: the part of the deposit
+   * the removal did not cover.
+   */
+  supplied: number;
 }
 
 /**
- * What `RebalanceLiquidity` will have to take from the WALLET, per side.
+ * What a `RebalanceLiquidity` actually took from the wallet, read off the
+ * transaction it landed in.
  *
- * The instruction does claim -> removal -> deposit atomically, and the deposit
- * half debits the wallet's token accounts. It cannot wrap native SOL, so a
- * wallet holding 1.6 SOL and an empty wSOL account still fails with the SPL
- * Token program's plain "insufficient funds" — which is all the chain says. It
- * names neither the account nor the amount.
+ * The first version of this modelled the answer from
+ * `simulateRebalancePositionWithBalancedStrategy`, using
+ * `actualAmount{X,Y}Deposited`. Six live samples spanning ratioBps 1745 to 8852
+ * all reported zero, because those fields are the explicit `topUpAmount` inputs
+ * — which this call passes as `new BN(0)` — and not the internal redeposit of
+ * withdrawn liquidity that actually debits the wallet. The measurement could
+ * only ever have printed "covered: true".
  *
- * This exists to answer the question that error cannot, and that decides what
- * to do about it:
+ * So it is measured, not modelled, the same way `receivedInTx` settled the swap
+ * output in v1.11.9. The transaction's own balance deltas cannot be wrong about
+ * which fields mean what.
  *
- *   - a shortfall of DUST is rounding, and MIN_QUOTE_BALANCE_USD is simply set
- *     too low for the position sizes in play;
- *   - a shortfall of real money means the re-centre is depositing into a range
- *     that needs a materially different token mix than the one it removed from,
- *     and no buffer size is the right answer to that.
+ * A NEGATIVE delta is the interesting one: the instruction debited the wallet,
+ * and that magnitude is exactly what the buffer had to cover. Its size decides
+ * the open question:
  *
- * Recorded before every path-B withdraw leg, whether or not it goes on to fail,
- * so the distribution is visible rather than only the failures.
+ *   - DUST means MIN_QUOTE_BALANCE_USD is simply too low for these position
+ *     sizes, and scaling the floor is the fix;
+ *   - REAL MONEY means the re-centre wants a materially different token mix than
+ *     it removed, and no buffer size is the right answer to that.
+ *
+ * Only successful legs produce a reading — a failed transaction moves nothing.
+ * That is a real limit: the BUTTHOLE failure that prompted this still yields no
+ * number of its own. What the successful legs give is the distribution, and
+ * whether it runs anywhere near the buffer.
  */
-export function depositShortfall(args: {
-  depositedX: BN;
-  depositedY: BN;
-  withdrawnX: BN;
-  withdrawnY: BN;
-  ataX: BN;
-  ataY: BN;
+export function walletMovement(args: {
+  deltaX: BN | null;
+  deltaY: BN | null;
   decimalsX: number;
   decimalsY: number;
-}): { x: SideShortfall; y: SideShortfall; covered: boolean } {
-  const side = (deposited: BN, withdrawn: BN, ata: BN, decimals: number): SideShortfall => {
-    const need = BN.max(new BN(0), deposited.sub(withdrawn));
+}): { x: SideMovement | null; y: SideMovement | null; suppliedAnything: boolean } {
+  const side = (delta: BN | null, decimals: number): SideMovement | null => {
+    if (delta === null) return null;
     return {
-      deposited: toUi(deposited, decimals),
-      withdrawn: toUi(withdrawn, decimals),
-      needed: toUi(need, decimals),
-      ata: toUi(ata, decimals),
-      // `gte`, not `gt`: needing exactly what is there is covered.
-      covered: ata.gte(need),
+      delta: toUi(delta, decimals),
+      // `isNeg()` rather than a comparison against zero: a zero delta is not a
+      // supply, and reporting it as one would make every quiet leg look like it
+      // drew on the buffer.
+      supplied: delta.isNeg() ? toUi(delta.neg(), decimals) : 0,
     };
   };
-  const x = side(args.depositedX, args.withdrawnX, args.ataX, args.decimalsX);
-  const y = side(args.depositedY, args.withdrawnY, args.ataY, args.decimalsY);
-  return { x, y, covered: x.covered && y.covered };
+  const x = side(args.deltaX, args.decimalsX);
+  const y = side(args.deltaY, args.decimalsY);
+  return { x, y, suppliedAnything: (x?.supplied ?? 0) > 0 || (y?.supplied ?? 0) > 0 };
 }
 
 /** Phase 1 of path B: one rebalance that recentres and leaves the surplus in the wallet. */
@@ -486,64 +489,63 @@ async function withdrawAndRecentre(
     new BN(cfg.maxActiveBinSlippage),
   );
 
-  /**
-   * Measured on every path-B withdraw leg, not only the ones that fail.
-   *
-   * A BUTTHOLE-SOL rebalance died here on 2026-08-07 with `Custom: 1` from the
-   * SPL Token program — "insufficient funds", naming neither the account nor the
-   * amount. The simulation knows both, so the number that decides what to do
-   * about it is available for free, right here, before anything is sent:
-   *
-   *   - a shortfall of DUST means MIN_QUOTE_BALANCE_USD is simply set too low
-   *     for these position sizes;
-   *   - a shortfall of real money means the re-centre is depositing into a range
-   *     needing a materially different token mix than the one it removed from,
-   *     and no buffer size is the right answer to that.
-   *
-   * Logged on success too, because one failure is an anecdote and the reason to
-   * measure is to see the distribution. Nothing is blocked on it — a bad reading
-   * must not be the reason a rebalance does not run.
-   */
-  try {
-    const [ataX, ataY] = await Promise.all([
-      client.ataBalance(pool.tokenX.publicKey, pool.tokenX.owner),
-      client.ataBalance(pool.tokenY.publicKey, pool.tokenY.owner),
-    ]);
-    const shortfall = depositShortfall({
-      depositedX: sim.simulationResult.actualAmountXDeposited,
-      depositedY: sim.simulationResult.actualAmountYDeposited,
-      withdrawnX: sim.simulationResult.actualAmountXWithdrawn,
-      withdrawnY: sim.simulationResult.actualAmountYWithdrawn,
-      ataX,
-      ataY,
-      decimalsX: pool.tokenX.mint.decimals,
-      decimalsY: pool.tokenY.mint.decimals,
-    });
-    deps.log[shortfall.covered ? "info" : "warn"](
-      { journalId: entry.id, positionPk: plan.positionPk, x: shortfall.x, y: shortfall.y },
-      shortfall.covered
-        ? "deposit shortfall covered by the wallet"
-        : "deposit shortfall EXCEEDS the wallet — this withdraw leg is expected to fail",
-    );
-  } catch (e) {
-    deps.log.debug(
-      { journalId: entry.id, err: e instanceof Error ? e.message : String(e) },
-      "deposit shortfall not measured",
-    );
-  }
-
   const results: SendResult[] = [];
   if (initBinArrayInstructions.length > 0) {
     results.push(await sender.sendInstructions(initBinArrayInstructions, [wallet], "init bin arrays"));
   }
-  results.push(
-    await sender.send(
-      new Transaction().add(...client.ataIxs(pool), ...rebalancePositionInstruction),
-      [wallet],
-      "rebalance (withdraw leg)",
-    ),
+  const legResult = await sender.send(
+    new Transaction().add(...client.ataIxs(pool), ...rebalancePositionInstruction),
+    [wallet],
+    "rebalance (withdraw leg)",
   );
+  results.push(legResult);
   deps.store.updateJournal(entry.id, { sigs: sigsOf(results) });
+
+  /**
+   * What that leg actually did to the wallet, read off the transaction.
+   *
+   * AFTER the send, not before, because the question is what moved and the only
+   * authority on that is the ledger. See `walletMovement` for what the first
+   * attempt at this got wrong.
+   *
+   * Nothing is blocked on it: the rebalance has already happened by the time
+   * this runs, and a failed reading is a debug line.
+   */
+  if (legResult.signature) {
+    try {
+      const [deltaX, deltaY] = await Promise.all([
+        client.receivedInTx(legResult.signature, pool.tokenX.publicKey, pool.tokenX.owner),
+        client.receivedInTx(legResult.signature, pool.tokenY.publicKey, pool.tokenY.owner),
+      ]);
+      const moved = walletMovement({
+        deltaX,
+        deltaY,
+        decimalsX: pool.tokenX.mint.decimals,
+        decimalsY: pool.tokenY.mint.decimals,
+      });
+      deps.log[moved.suppliedAnything ? "warn" : "info"](
+        {
+          journalId: entry.id,
+          positionPk: plan.positionPk,
+          x: moved.x,
+          y: moved.y,
+          // The Y side is native SOL on these pools, and `receivedInTx` folds in
+          // the lamport delta WITHOUT adding the fee back. So a small negative
+          // there is the transaction fee, not the buffer being drawn on.
+          feeLamports: legResult.feeLamports ?? null,
+        },
+        moved.suppliedAnything
+          ? "withdraw leg DREW on the wallet — this is the shortfall the buffer covers"
+          : "withdraw leg drew nothing from the wallet",
+      );
+    } catch (e) {
+      deps.log.debug(
+        { journalId: entry.id, err: e instanceof Error ? e.message : String(e) },
+        "wallet movement not measured",
+      );
+    }
+  }
+
   return results;
 }
 
