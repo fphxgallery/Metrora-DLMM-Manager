@@ -384,6 +384,66 @@ async function runWithSwap(deps: RebalanceDeps, plan: RebalancePlan, entry: Jour
   return results;
 }
 
+/** One side of what the deposit half has to find from outside the position. */
+export interface SideShortfall {
+  /** What the deposit will debit, in UI units. */
+  deposited: number;
+  /** What the removal releases back, in UI units. */
+  withdrawn: number;
+  /** deposited - withdrawn, floored at zero: the part the wallet must supply. */
+  needed: number;
+  /** What the wallet's token account actually holds right now. */
+  ata: number;
+  covered: boolean;
+}
+
+/**
+ * What `RebalanceLiquidity` will have to take from the WALLET, per side.
+ *
+ * The instruction does claim -> removal -> deposit atomically, and the deposit
+ * half debits the wallet's token accounts. It cannot wrap native SOL, so a
+ * wallet holding 1.6 SOL and an empty wSOL account still fails with the SPL
+ * Token program's plain "insufficient funds" — which is all the chain says. It
+ * names neither the account nor the amount.
+ *
+ * This exists to answer the question that error cannot, and that decides what
+ * to do about it:
+ *
+ *   - a shortfall of DUST is rounding, and MIN_QUOTE_BALANCE_USD is simply set
+ *     too low for the position sizes in play;
+ *   - a shortfall of real money means the re-centre is depositing into a range
+ *     that needs a materially different token mix than the one it removed from,
+ *     and no buffer size is the right answer to that.
+ *
+ * Recorded before every path-B withdraw leg, whether or not it goes on to fail,
+ * so the distribution is visible rather than only the failures.
+ */
+export function depositShortfall(args: {
+  depositedX: BN;
+  depositedY: BN;
+  withdrawnX: BN;
+  withdrawnY: BN;
+  ataX: BN;
+  ataY: BN;
+  decimalsX: number;
+  decimalsY: number;
+}): { x: SideShortfall; y: SideShortfall; covered: boolean } {
+  const side = (deposited: BN, withdrawn: BN, ata: BN, decimals: number): SideShortfall => {
+    const need = BN.max(new BN(0), deposited.sub(withdrawn));
+    return {
+      deposited: toUi(deposited, decimals),
+      withdrawn: toUi(withdrawn, decimals),
+      needed: toUi(need, decimals),
+      ata: toUi(ata, decimals),
+      // `gte`, not `gt`: needing exactly what is there is covered.
+      covered: ata.gte(need),
+    };
+  };
+  const x = side(args.depositedX, args.withdrawnX, args.ataX, args.decimalsX);
+  const y = side(args.depositedY, args.withdrawnY, args.ataY, args.decimalsY);
+  return { x, y, covered: x.covered && y.covered };
+}
+
 /** Phase 1 of path B: one rebalance that recentres and leaves the surplus in the wallet. */
 async function withdrawAndRecentre(
   deps: RebalanceDeps,
@@ -425,6 +485,52 @@ async function withdrawAndRecentre(
     sim,
     new BN(cfg.maxActiveBinSlippage),
   );
+
+  /**
+   * Measured on every path-B withdraw leg, not only the ones that fail.
+   *
+   * A BUTTHOLE-SOL rebalance died here on 2026-08-07 with `Custom: 1` from the
+   * SPL Token program — "insufficient funds", naming neither the account nor the
+   * amount. The simulation knows both, so the number that decides what to do
+   * about it is available for free, right here, before anything is sent:
+   *
+   *   - a shortfall of DUST means MIN_QUOTE_BALANCE_USD is simply set too low
+   *     for these position sizes;
+   *   - a shortfall of real money means the re-centre is depositing into a range
+   *     needing a materially different token mix than the one it removed from,
+   *     and no buffer size is the right answer to that.
+   *
+   * Logged on success too, because one failure is an anecdote and the reason to
+   * measure is to see the distribution. Nothing is blocked on it — a bad reading
+   * must not be the reason a rebalance does not run.
+   */
+  try {
+    const [ataX, ataY] = await Promise.all([
+      client.ataBalance(pool.tokenX.publicKey, pool.tokenX.owner),
+      client.ataBalance(pool.tokenY.publicKey, pool.tokenY.owner),
+    ]);
+    const shortfall = depositShortfall({
+      depositedX: sim.simulationResult.actualAmountXDeposited,
+      depositedY: sim.simulationResult.actualAmountYDeposited,
+      withdrawnX: sim.simulationResult.actualAmountXWithdrawn,
+      withdrawnY: sim.simulationResult.actualAmountYWithdrawn,
+      ataX,
+      ataY,
+      decimalsX: pool.tokenX.mint.decimals,
+      decimalsY: pool.tokenY.mint.decimals,
+    });
+    deps.log[shortfall.covered ? "info" : "warn"](
+      { journalId: entry.id, positionPk: plan.positionPk, x: shortfall.x, y: shortfall.y },
+      shortfall.covered
+        ? "deposit shortfall covered by the wallet"
+        : "deposit shortfall EXCEEDS the wallet — this withdraw leg is expected to fail",
+    );
+  } catch (e) {
+    deps.log.debug(
+      { journalId: entry.id, err: e instanceof Error ? e.message : String(e) },
+      "deposit shortfall not measured",
+    );
+  }
 
   const results: SendResult[] = [];
   if (initBinArrayInstructions.length > 0) {
