@@ -213,7 +213,13 @@ export function rebalanceFailureHtml(args: {
 
   if (leg) rows.push(wideRow("leg", leg.name, leg.step));
   if (decoded) {
-    rows.push(wideRow("code", String(decoded.code), decoded.name ?? "not a DLMM error"));
+    /**
+     * "from the swap route", not "not a DLMM error". 6001 IS a real error — it
+     * just came from Jupiter, and the gate declines to name another program's
+     * code rather than guessing at it. Saying what it is beats saying what it
+     * is not.
+     */
+    rows.push(wideRow("code", String(decoded.code), decoded.name ?? "from the swap route"));
   }
   rows.push("─".repeat(33));
 
@@ -222,9 +228,17 @@ export function rebalanceFailureHtml(args: {
    * and never a decode the gate was not confident about: a plausible-looking
    * wrong explanation costs more than no explanation, because it sends the
    * operator to check the wrong thing.
+   *
+   * Omitted entirely when neither survives. Stripping the JSON off "swap
+   * CATE->SOL failed on chain: {...}" leaves the sentence dangling at "failed on
+   * chain:", and a `cause` row with no cause in it is worse than no row — it
+   * reads as though the explanation went missing.
    */
-  for (const line of wrap(decoded?.cause ?? firstLine(error), CAUSE_W)) {
-    rows.push(wideRow(rows.some((r) => r.startsWith("cause")) ? "" : "cause", line));
+  const cause = decoded?.cause ?? firstLine(error);
+  if (cause !== null) {
+    for (const line of wrap(cause, CAUSE_W)) {
+      rows.push(wideRow(rows.some((r) => r.startsWith("cause")) ? "" : "cause", line));
+    }
   }
 
   rows.push(
@@ -272,9 +286,31 @@ export function rebalanceRecoveredHtml(args: {
   return `✅ <b>Recovered ${escapeHtml(args.pairName)}</b>\n<code>${escapeHtml(rows.join("\n"))}</code>`;
 }
 
-/** The message without its trailing on-chain JSON, which the code row already covers. */
-function firstLine(error: string): string {
-  return error.replace(/\s*\{"InstructionError".*$/, "").trim() || error;
+/**
+ * The readable part of an error message, or null when there is none.
+ *
+ * Three things get cut, all of them because another row already says it:
+ *
+ *   - the trailing `{"InstructionError":...}` — the `code` row's whole job
+ *   - "Nothing was sent; the withdrawn funds are in the wallet..." — the `funds` row
+ *   - "...retried automatically" — the `retry` row
+ *
+ * What is left of "swap CATE->SOL failed on chain: {...}" after the first cut is
+ * "swap CATE->SOL failed on chain:", which is a label and a colon and no
+ * information. Returning it produced a `cause` row that looked like the
+ * explanation had gone missing, so a message that reduces to nothing returns
+ * null and the row is dropped instead.
+ */
+function firstLine(error: string): string | null {
+  const trimmed = error
+    .replace(/\s*\{"InstructionError".*$/, "")
+    .replace(/\s*[—-]?\s*Nothing was sent;.*$/i, "")
+    .replace(/\s*(and\s+)?this rebalance is retried automatically\.?\s*$/i, "")
+    .trim();
+
+  // A label with nothing after it: "swap X->Y failed on chain:", "... would fail:".
+  if (trimmed === "" || /(failed on chain|would fail)\s*:?$/i.test(trimmed)) return null;
+  return trimmed;
 }
 
 /**

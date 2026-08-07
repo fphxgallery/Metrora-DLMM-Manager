@@ -134,6 +134,77 @@ test("a failure before anything moved does not claim funds are in the wallet", (
   assert.ok(!rows.includes("$36.72"), "a figure here would read as money at risk when none is");
 });
 
+test("a cause row with nothing in it is dropped, not printed empty", () => {
+  /**
+   * Found by rendering the real messages after v1.12.0 shipped. Stripping the
+   * JSON off a bare on-chain swap failure leaves "swap CATE->SOL failed on
+   * chain:" — a label, a colon, and no information. Printed as a `cause` row it
+   * reads as though the explanation went missing.
+   */
+  const rows = block(fail({ phase: "swap", error: 'swap CATE->SOL failed on chain: {"InstructionError":[5,{"Custom":6001}]}' }));
+
+  assert.ok(!rows.includes("cause"), `expected no cause row, got:\n${rows}`);
+  assert.match(rows, /code\s+6001/, "the code still points somewhere");
+  assert.match(rows, /funds\s+~\$36\.72\s+in the WALLET/, "and the rows that matter survive");
+});
+
+test("another program's code says where it came from, not what it isn't", () => {
+  // "not a DLMM error" described the gate rather than the error. 6001 IS a real
+  // error; it came from Jupiter, which the gate declines to name.
+  const rows = block(fail({ phase: "swap", error: 'swap CATE->SOL failed on chain: {"InstructionError":[5,{"Custom":6001}]}' }));
+  assert.match(rows, /code\s+6001\s+from the swap route/);
+});
+
+test("the cause does not repeat what the funds and retry rows already say", () => {
+  // The price-impact message ends "...the withdrawn funds are in the wallet and
+  // this rebalance is retried automatically" — both rows below it, verbatim.
+  const rows = block(
+    fail({
+      phase: "swap",
+      error:
+        "swap price impact 420bps exceeds MAX_SWAP_PRICE_IMPACT_BPS (200bps) — refusing the " +
+        "SOL->BUTTHOLE route. Nothing was sent; the withdrawn funds are in the wallet and this " +
+        "rebalance is retried automatically.",
+    }),
+  );
+
+  /**
+   * Flattened before matching. The cause is wrapped, so a phrase straddling a
+   * line break does not match a regex with a literal space in it — an assertion
+   * written against the raw block passes whether the text is absent or merely
+   * split, which is no assertion at all.
+   */
+  const flat = rows.replace(/\s+/g, " ");
+
+  assert.match(rows, /cause\s+swap price impact 420bps exceeds/, "the part that says something survives");
+  assert.ok(!/retried automatically/.test(flat), "the retry row already says this");
+  assert.ok(!/Nothing was sent/.test(flat), "the funds row already says this");
+  assert.ok(!/withdrawn funds are in the wallet/.test(flat), "and this");
+  assert.match(rows, /retry\s+automatic/);
+});
+
+test("the retry tail is trimmed even without a 'Nothing was sent' prefix", () => {
+  // The v1.11.9 unmeasured-swap message ends the same way but starts differently,
+  // so the funds-sentence trim does not reach it. Without its own rule the alert
+  // would tell you it retries automatically directly above the row saying so.
+  const flat = block(
+    fail({
+      phase: "deposit",
+      error:
+        "the swap landed but its output could not be measured, so there is no safe amount to " +
+        "deposit — the proceeds are in the wallet and this rebalance is retried automatically",
+    }),
+  ).replace(/\s+/g, " ");
+
+  assert.ok(!/retried automatically/.test(flat), "the retry row says this");
+  assert.match(flat, /could not be measured/, "the part that matters survives");
+});
+
+test("a simulation failure keeps its program log, which is the whole message", () => {
+  const rows = block(fail({ error: "rebalance (deposit leg) would fail: Program log: Error: insufficient funds" }));
+  assert.match(rows, /insufficient funds/);
+});
+
 test("a pair name containing markup cannot break the message", () => {
   // Same rule as the success alert: pair names come from token metadata.
   const html = fail({ pairName: '<b>PWN</b> & "co"' });
