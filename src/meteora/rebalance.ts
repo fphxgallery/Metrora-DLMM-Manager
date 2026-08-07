@@ -10,6 +10,7 @@ import { TxError, type TxSender, type SendResult } from "../tx/send.js";
 import type { JupiterSwap } from "../swap/jupiter.js";
 import { StrategyType, type DlmmPool, type PositionData } from "./sdk.js";
 import { priceOfBin, toUi, valuePosition } from "./pricing.js";
+import { rebalanceRecoveredHtml } from "../alerts.js";
 
 /**
  * Jupiter's `SlippageToleranceExceeded`, as it appears in a failed simulation:
@@ -67,6 +68,8 @@ export interface RebalanceDeps {
   log: Logger;
   /** Optional push channel, so a low wallet buffer is not only a log line. */
   notify?: (msg: string) => void;
+  /** The same channel for messages that need the monospace block. */
+  notifyHtml?: (html: string) => void;
 }
 
 export interface RebalancePlan {
@@ -1115,6 +1118,12 @@ export async function resumeJournal(
         continue;
       }
 
+      // Counted before the attempt, not after: an attempt that throws still
+      // happened, and "retry #3" is the number that tells an operator this one
+      // is not recovering on its own.
+      entry.resumeAttempts = (entry.resumeAttempts ?? 0) + 1;
+      store.updateJournal(entry.id, { resumeAttempts: entry.resumeAttempts });
+
       const pool = await client.getPool(entry.poolAddress, { fresh: true });
       let positionData: PositionData;
       try {
@@ -1396,6 +1405,26 @@ async function finishResumed(
     sigs: allSigs,
   });
   log.warn({ journalId: entry.id, sigs: newSigs, costLamports }, "rebalance resumed and completed");
+
+  /**
+   * The other half of the FAILED alert.
+   *
+   * Without this a recovery is invisible: the failure pushes a notification and
+   * the fix two minutes later is a log line. Every FAILED then looks permanent,
+   * which is exactly why the one that WAS permanent went unnoticed for days.
+   */
+  const solPriceUsd = await deps.dataApi.solPriceUsd().catch(() => null);
+  deps.notifyHtml?.(
+    rebalanceRecoveredHtml({
+      pairName: store.position(entry.positionPk)?.pairName ?? entry.positionPk.slice(0, 8),
+      journalId: entry.id,
+      attempt: entry.resumeAttempts ?? 1,
+      failedAt: entry.failedAt ?? null,
+      range: [entry.targetMinBinId, entry.targetMaxBinId],
+      costLamports,
+      solPriceUsd,
+    }),
+  );
 }
 
 /** Fees actually paid across a set of signatures. Best effort — a miss adds 0. */

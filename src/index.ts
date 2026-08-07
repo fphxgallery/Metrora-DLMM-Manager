@@ -63,6 +63,7 @@ async function main(): Promise<void> {
     store,
     log,
     notify: (msg) => notifier.notify(msg),
+    notifyHtml: (html) => notifier.notifyHtml(html),
   };
   const engine = new Engine(ctx, rebalanceDeps, notifier);
   ctx.engine = engine;

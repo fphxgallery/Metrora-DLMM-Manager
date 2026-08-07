@@ -12,7 +12,7 @@ import {
 } from "./meteora/rebalance.js";
 import { rangeStatus } from "./meteora/pricing.js";
 import { TriggerRunner } from "./triggers.js";
-import { rebalanceAlertHtml, snapshotBeforeRebalance } from "./alerts.js";
+import { rebalanceAlertHtml, rebalanceFailureHtml, snapshotBeforeRebalance } from "./alerts.js";
 
 /** How stale a pending journal entry must be before a tick retries it. */
 const RESUME_RETRY_MS = 120_000;
@@ -217,7 +217,26 @@ export class Engine {
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      this.notifier.notify(`⚠️ Rebalance FAILED for ${managed.pairName ?? managed.positionPk.slice(0, 8)}: ${message}`);
+      // Read the journal back rather than assuming the phase: executeRebalance
+      // leaves it at wherever execution actually stopped, and that is what says
+      // whether any money is currently out of the position.
+      const entry = this.ctx.store.latestJournalFor(managed.positionPk);
+      // Stamped once, so the recovery alert can say how long the funds were out
+      // of the position. `updatedAt` cannot: the resume's own writes move it.
+      if (entry && entry.failedAt === undefined) {
+        this.ctx.store.updateJournal(entry.id, { failedAt: Date.now() });
+      }
+      this.notifier.notifyHtml(
+        rebalanceFailureHtml({
+          pairName: managed.pairName ?? managed.positionPk.slice(0, 8),
+          phase: entry?.phase,
+          error: message,
+          journalId: entry?.id ?? "unknown",
+          strandedUsd: decision.plan.swap?.valueUsd ?? null,
+          cfg: this.deps.cfg,
+          retryEveryMs: RESUME_RETRY_MS,
+        }),
+      );
     } finally {
       this.busy.delete(managed.positionPk);
     }

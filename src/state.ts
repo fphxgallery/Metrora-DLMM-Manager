@@ -154,6 +154,15 @@ export interface JournalEntry {
   strategyType: StrategyTypeName;
   startedAt: number;
   updatedAt: number;
+  /**
+   * When this entry FIRST failed. Not `updatedAt`, which moves on every write
+   * including the resume's own — so it cannot answer "how long were the funds
+   * out of the position", which is the only question that matters while a
+   * path-B rebalance sits half-finished. Set once and never overwritten.
+   */
+  failedAt?: number;
+  /** How many times resume has picked this entry up. Drives "retry #N". */
+  resumeAttempts?: number;
   sigs: string[];
   error?: string;
   /** Path B only: the ratio swap planned/executed between withdraw and deposit. */
@@ -361,6 +370,21 @@ export class Store {
     if (!j) return;
     Object.assign(j, patch, { updatedAt: Date.now() });
     this.save();
+  }
+
+  /**
+   * The most recent journal entry for a position, whatever state it is in.
+   *
+   * Distinct from `pendingJournal`, which filters `failed` out — and a failure
+   * alert needs precisely the entry that just failed. The path-A failure marks
+   * itself `failed` immediately, so looking for it among the pending ones finds
+   * nothing and the alert loses the phase it needs to say where the money is.
+   */
+  latestJournalFor(positionPk: string): JournalEntry | undefined {
+    for (let i = this.data.journal.length - 1; i >= 0; i -= 1) {
+      if (this.data.journal[i].positionPk === positionPk) return this.data.journal[i];
+    }
+    return undefined;
   }
 
   /** Entries that neither completed nor were marked failed — resume these at boot. */

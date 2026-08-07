@@ -1,8 +1,10 @@
+import type { Config } from "./config.js";
 import type { DataApi } from "./meteora/datapi.js";
 import type { MeteoraClient } from "./meteora/client.js";
 import type { Logger } from "./logger.js";
 import type { ManagedPosition } from "./state.js";
 import type { RebalancePlan } from "./meteora/rebalance.js";
+import { decodeTxError, fundsAt, legOf } from "./errors.js";
 import { positionFeeTvlPct } from "./metrics.js";
 import { escapeHtml } from "./notify.js";
 
@@ -175,6 +177,128 @@ export function rebalanceAlertHtml(args: {
   return `🔄 <b>Rebalanced ${escapeHtml(pairName)}</b>\n<code>${escapeHtml(rows.join("\n"))}</code>`;
 }
 
+/**
+ * The rebalance FAILED alert.
+ *
+ * What it replaces, in full:
+ *
+ *   ⚠️ Rebalance FAILED for BUTTHOLE-SOL: rebalance (deposit leg) failed on
+ *   chain: {"InstructionError":[5,{"Custom":6004}]}
+ *
+ * Three things an operator needs from that and could not get: what the code
+ * means, whether any money is currently out of the position, and whether
+ * anything is going to be done about it. All three are already known here.
+ *
+ * The funds line is the important one. A path-B rebalance takes the position
+ * apart before putting it back, so "failed" spans everything from "nothing
+ * moved" to "the whole position is loose tokens in the wallet", and the error
+ * text cannot tell them apart. The phase can.
+ */
+export function rebalanceFailureHtml(args: {
+  pairName: string;
+  /** The journal phase execution stopped at — where the money is. */
+  phase: string | undefined;
+  error: string;
+  journalId: string;
+  /** USD value of the swap leg, when there was one. Null when unknown. */
+  strandedUsd: number | null;
+  cfg: Pick<Config, "maxActiveBinSlippage">;
+  retryEveryMs: number;
+}): string {
+  const { pairName, phase, error, journalId, strandedUsd } = args;
+  const decoded = decodeTxError(error, args.cfg);
+  const leg = legOf(phase);
+  const funds = fundsAt(phase);
+  const rows: string[] = [];
+
+  if (leg) rows.push(wideRow("leg", leg.name, leg.step));
+  if (decoded) {
+    rows.push(wideRow("code", String(decoded.code), decoded.name ?? "not a DLMM error"));
+  }
+  rows.push("─".repeat(33));
+
+  /**
+   * The decoded cause when there is one, otherwise the raw message. Never both,
+   * and never a decode the gate was not confident about: a plausible-looking
+   * wrong explanation costs more than no explanation, because it sends the
+   * operator to check the wrong thing.
+   */
+  for (const line of wrap(decoded?.cause ?? firstLine(error), CAUSE_W)) {
+    rows.push(wideRow(rows.some((r) => r.startsWith("cause")) ? "" : "cause", line));
+  }
+
+  rows.push(
+    wideRow("funds", strandedUsd !== null && funds.held ? `~$${strandedUsd.toFixed(2)}` : "—", funds.where),
+  );
+  rows.push(wideRow("retry", "automatic", `~${Math.round(args.retryEveryMs / 60_000)} min`));
+  rows.push(wideRow("entry", journalId.slice(0, 8)));
+
+  return `⚠️ <b>Rebalance FAILED ${escapeHtml(pairName)}</b>\n<code>${escapeHtml(rows.join("\n"))}</code>`;
+}
+
+/**
+ * The recovery alert, sent when a resume finishes an interrupted rebalance.
+ *
+ * Nothing was sent for this before: a failure alerted, and the recovery two
+ * minutes later was a log line nobody was watching. That taught the wrong
+ * lesson — every FAILED looked permanent, so the one that actually WAS
+ * permanent (0.39 SOL, 2026-08-07) looked like all the others.
+ */
+export function rebalanceRecoveredHtml(args: {
+  pairName: string;
+  journalId: string;
+  attempt: number;
+  /** When the entry first failed, so this can say how long the funds were out. */
+  failedAt: number | null;
+  range: [number, number];
+  costLamports: number;
+  solPriceUsd: number | null;
+  now?: number;
+}): string {
+  const now = args.now ?? Date.now();
+  const costSol = args.costLamports / 1_000_000_000;
+  const rows = [
+    wideRow("retry", `#${args.attempt}`, args.failedAt === null ? "" : `after ${precisely(now - args.failedAt)}`),
+    wideRow("outcome", "deposit landed"),
+    wideRow("range", `${args.range[0]} — ${args.range[1]}`),
+    wideRow(
+      "cost",
+      args.solPriceUsd ? `$${(costSol * args.solPriceUsd).toFixed(3)}` : `${costSol.toFixed(6)} SOL`,
+      "all legs",
+    ),
+    wideRow("entry", args.journalId.slice(0, 8)),
+  ];
+
+  return `✅ <b>Recovered ${escapeHtml(args.pairName)}</b>\n<code>${escapeHtml(rows.join("\n"))}</code>`;
+}
+
+/** The message without its trailing on-chain JSON, which the code row already covers. */
+function firstLine(error: string): string {
+  return error.replace(/\s*\{"InstructionError".*$/, "").trim() || error;
+}
+
+/**
+ * How wide the wrapped cause runs. Matches the divider, so the explanation fills
+ * the block rather than stacking into a narrow column beside it.
+ */
+const CAUSE_W = 33;
+
+/** Greedy wrap. The block is monospace, so a long line would force sideways scrolling. */
+function wrap(text: string, width: number): string[] {
+  const out: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/)) {
+    if (line === "") line = word;
+    else if (line.length + 1 + word.length <= width) line += ` ${word}`;
+    else {
+      out.push(line);
+      line = word;
+    }
+  }
+  if (line !== "") out.push(line);
+  return out.length > 0 ? out : [""];
+}
+
 const LABEL_W = 9;
 const COL_W = 9;
 
@@ -184,6 +308,18 @@ function row(label: string, a: string, b = ""): string {
   return b === "" ? `${head}${a}` : `${head}${a.padEnd(COL_W)}${b}`;
 }
 
+/**
+ * The failure and recovery alerts use a wider value column than the success
+ * alert. Their values are words rather than figures — "automatic", "0.5086 SOL"
+ * — and at 9 they collided with the second column instead of aligning with it.
+ */
+const WIDE_COL_W = 13;
+
+function wideRow(label: string, a: string, b = ""): string {
+  const head = label.padEnd(LABEL_W);
+  return b === "" ? `${head}${a}` : `${head}${a.padEnd(WIDE_COL_W)}${b}`;
+}
+
 /** ASCII hyphen, not a minus sign — it has to line up in a monospace column. */
 function usd(n: number): string {
   return `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
@@ -191,6 +327,22 @@ function usd(n: number): string {
 
 function pct(n: number): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+/**
+ * A duration with its seconds kept.
+ *
+ * `ago` rounds to the minute, which is right for "last rebalance 41m ago" and
+ * wrong here: a recovery is usually two-and-a-bit minutes, and rounding it to
+ * "2m" throws away the part that says whether the retry was the first scheduled
+ * one or the fourth.
+ */
+function precisely(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  if (m === 0) return `${s}s`;
+  return s === 0 ? `${m}m` : `${m}m${s}s`;
 }
 
 function ago(ms: number): string {
